@@ -57,25 +57,24 @@
   const CATALOGO = [
     "Hamburguesa Clásica","Hamburguesa Doble","Combo Hamburguesa",
     "Alitas","Boneless","Papas a la Francesa","Aros de Cebolla",
-    "Refresco","Malteada","Limonada","Ensalada","Postre","Cerveza","Chilaquiles",
-    "American Sampler"
-
+    "Refresco","Malteada","Limonada","Ensalada","Postre","Cerveza",
+    "Chilaquiles","Huevos Rancheros","American Sampler"
   ];
   const PUNTOS_MAP = Object.freeze({
     "Hamburguesa Clásica": 5, "Hamburguesa Doble": 7, "Combo Hamburguesa": 8,
     "Alitas": 5, "Boneless": 5, "Papas a la Francesa": 3, "Aros de Cebolla": 3,
     "Refresco": 3, "Malteada": 4, "Limonada": 3, "Ensalada": 4, "Postre": 4, "Cerveza": 3,
-    "Chilaquiles": 8,"Huevos Rancheros":7,"American Sampler":8 
+    "Chilaquiles": 8, "Huevos Rancheros": 7, "American Sampler": 8
   });
   const getPuntosUnit = (name) => Number(PUNTOS_MAP[name] || 0);
 
-  // ===== Lexicón =====
+  // ===== Lexicón (expone en window para ocr.js) =====
   const PRODUCT_LEXICON = {
     "Hamburguesa Clásica": ["hamburguesa","hamb.","burger","hb","hbg","classic","clasica","clásica","sencilla","single"],
     "Hamburguesa Doble":   ["hamburguesa doble","hamb doble","doble","double","dbl"],
     "Combo Hamburguesa":   ["combo","comb","cmb","paquete","meal","menú","menu"],
     "Alitas":              ["alitas","wing","wings","wing's","wingz"],
-    "Boneless":            ["boneless","bonless","bonles","bon.","bonles"],
+    "Boneless":            ["boneless","bonless","bonles","bon."],
     "Papas a la Francesa": ["papas","francesa","french fries","fries","pap.","paps","papitas","papas a la francesa"],
     "Aros de Cebolla":     ["aros","aros cebolla","anillos","onion rings","rings"],
     "Refresco":            ["refresco","ref","soda","coca","pepsi","sprite","fanta","manzanita","bebida","soft"],
@@ -84,11 +83,12 @@
     "Ensalada":            ["ensalada","salad"],
     "Postre":              ["postre","dessert","brownie","pie","helado","nieve","pastel"],
     "Cerveza":             ["cerveza","beer","victoria","corona","tecate","modelo","bohemia"],
-    "Chilaquiles":          ["Chilaquiles","Chilaquiles"],
-    "Huevos Rancheros":     ["HuevosRancheros","huevos rancheros","Huevos Rancheros"],
-    "American Sampler ":    ["Americansampler","American Sampler", "american sampler"]
-
+    "Chilaquiles":         ["chilaquiles","chilaqs"],
+    "Huevos Rancheros":    ["huevos rancheros","rancheros"],
+    "American Sampler":    ["american sampler","sampler","american-sampler"]
   };
+  // HAZ visible el lexicón para ocr.js:
+  window.PRODUCT_LEXICON = PRODUCT_LEXICON;
 
   // ===== Helpers =====
   function setStatus(msg, type='') {
@@ -472,6 +472,7 @@
       if (fecha)  iFecha && (iFecha.value = fecha);
       if (total)  iTotal && (iTotal.value = parseFloat(total).toFixed(2));
 
+      // limpiar y rellenar productos
       productos = [];
       productosDetectados.forEach(p => upsertProducto(p.name, p.qty));
 
@@ -710,6 +711,16 @@
     const btn = e.target.closest('button[data-add]');
     if (!btn) return;
     upsertProducto(btn.dataset.add, 1);
+  });
+
+  // === Integra productos detectados por OCR.js ===
+  document.addEventListener('ocr:productos', (ev) => {
+    const det = ev.detail || [];
+    // Resetea y agrega
+    productos = [];
+    if (Array.isArray(det)) {
+      det.forEach(p => upsertProducto(p.name, p.qty || 1));
+    }
   });
 
   btnRegistrar?.addEventListener('click', registrarTicketRTDB);
