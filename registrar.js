@@ -1,11 +1,10 @@
-// registrar.js — Cámara + OCR + Puntos + Firestore (versión completa)
+
 (() => {
   const $ = id => document.getElementById(id);
 
   // ===== Firebase (usa tu firebase-config.js) =====
   const auth = firebase.auth();
-  const db   = firebase.firestore();
-  db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+  const db   = firebase.database();
   console.log("Proyecto (registrar):", firebase.app().options.projectId);
 
   // ===== UI =====
@@ -40,6 +39,11 @@
   const tablaPuntosBody = ($('tablaPuntos')||{}).querySelector?.('tbody');
   const totalPuntosEl   = $('totalPuntos');
   const greetEl         = $('userGreeting');
+
+  // ===== Políticas de Puntos / Límites =====
+  const PUNTO_POR_CADA = 10;     // si no usas tabla por producto: 1 punto por cada $10
+  const VENCE_DIAS     = 180;    // si quieres guardar vencimiento fijo por ticket
+  const DAY_LIMIT      = 3;      // máx. tickets por día por usuario (ajústalo o pon 0 para desactivar)
 
   // ===== Estado =====
   let isLogged = false;
@@ -87,7 +91,6 @@
   }
   function enableForm(on) {
     [iNum, iFecha, iTotal, nuevoProd, nuevaCant, btnAdd, buscarProd].forEach(x => x && (x.disabled = !on));
-    // El botón Registrar depende además de sesión:
     if (btnRegistrar) btnRegistrar.disabled = !on || !isLogged;
   }
   function setPreview(file) {
@@ -124,8 +127,8 @@
   function normalize(s){
     return String(s||'')
       .toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")    // quita acentos
-      .replace(/[^\w$%#./,:\- \t\n]/g,' ')               // limpia raro pero deja símbolos útiles
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+      .replace(/[^\w$%#./,:\- \t\n]/g,' ')
       .replace(/\s+/g,' ')
       .trim();
   }
@@ -220,7 +223,7 @@
     const clean = normalize(raw);
     const lines = splitLinesForReceipt(raw);
 
-    // Número de orden/folio
+    // Folio / número
     let numero = null;
     const idRX = [
       /(?:orden|order|folio|ticket|tkt|transac(?:cion)?|venta|nota|id|no\.?)\s*(?:#|:)?\s*([a-z0-9\-]{3,})/i,
@@ -415,7 +418,7 @@
   // ===== OCR (Tesseract) =====
   const WORKER_PATH = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js';
   const CORE_PATH   = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js';
-  const LANG_PATH   = 'https://tessdata.projectnaptha.com/4.0.0_fast'; // o sirve /tessdata si hospedas local
+  const LANG_PATH   = 'https://tessdata.projectnaptha.com/4.0.0_fast';
   const OCR_TIMEOUT_MS = 25000;
 
   async function prepareForOCR(file){
@@ -556,11 +559,20 @@
     });
     return { total, detalle };
   }
+  function puntosDesdeTotal() {
+    const totalNum = parseFloat(iTotal.value || "0") || 0;
+    return Math.floor(totalNum / PUNTO_POR_CADA);
+  }
 
-  // ===== Guardar en Firestore =====
+  // ===== Guardar en RTDB =====
   function addMonths(date, months){ const d=new Date(date.getTime()); d.setMonth(d.getMonth()+months); return d; }
+  function startEndOfToday() {
+    const s = new Date(); s.setHours(0,0,0,0);
+    const e = new Date(); e.setHours(23,59,59,999);
+    return { start: s.getTime(), end: e.getTime() };
+  }
 
-  async function registrarTicket() {
+  async function registrarTicketRTDB() {
     const user = auth.currentUser;
     if (!user) {
       msgTicket.className='validacion-msg err';
@@ -568,63 +580,84 @@
       return;
     }
 
-    const numero   = (iNum.value || '').trim();
-    const fechaStr = iFecha.value;
-    const totalNum = parseFloat(iTotal.value || "0") || 0;
+    const folio   = (iNum.value || '').trim().toUpperCase();
+    const fechaStr= iFecha.value;
+    const totalNum= parseFloat(iTotal.value || "0") || 0;
 
-    if (!numero || !fechaStr || !totalNum) {
+    if (!folio || !fechaStr || !totalNum) {
       msgTicket.className='validacion-msg err';
       msgTicket.textContent = "Faltan datos obligatorios: número, fecha y total.";
       return;
     }
 
-    const puntos = getPuntosDetalle();
-    const fecha = new Date(`${fechaStr}T00:00:00`);
-    const vencePuntos = addMonths(fecha, 6);
+    // Calcula puntos: por productos si hay, si no por total
+    let puntosTotal = 0;
+    if (productos.length) {
+      const calc = getPuntosDetalle();
+      puntosTotal = calc.total;
+    } else {
+      puntosTotal = puntosDesdeTotal();
+    }
+    if (puntosTotal <= 0) {
+      msgTicket.className='validacion-msg err';
+      msgTicket.textContent = "El total no genera puntos (verifica los datos).";
+      return;
+    }
 
-    const ticketsRef = db.collection('users').doc(user.uid).collection('tickets');
+    // Límite por día (opcional)
+    if (DAY_LIMIT > 0) {
+      const { start, end } = startEndOfToday();
+      const daySnap = await db.ref(`users/${user.uid}/tickets`)
+        .orderByChild('createdAt')
+        .startAt(start).endAt(end)
+        .get();
+      const countToday = daySnap.exists() ? Object.keys(daySnap.val()).length : 0;
+      if (countToday >= DAY_LIMIT) {
+        msgTicket.className='validacion-msg err';
+        msgTicket.textContent = `⚠️ Ya registraste ${DAY_LIMIT} tickets hoy.`;
+        return;
+      }
+    }
+
+    const fecha = new Date(`${fechaStr}T00:00:00`);
+    const vencePuntos = addMonths(fecha, VENCE_DIAS/30);
+
+    const userRef   = db.ref(`users/${user.uid}`);
+    const ticketRef = userRef.child(`tickets/${folio}`);
+    const pointsRef = userRef.child('points');
 
     try {
-      // Duplicado por número
-      const dup = await ticketsRef.where('numero','==',numero).limit(1).get();
-      if (!dup.empty) {
+      // Crear ticket anti-duplicado (transacción)
+      const res = await ticketRef.transaction(current => {
+        if (current) return; // ya existe → aborta
+        return {
+          folio,
+          fecha: fechaStr, // guardado como string 'YYYY-MM-DD'
+          total: totalNum,
+          // si quieres guardar el desglose por producto:
+          productos: productos.map(p=>({nombre:p.name, cantidad:p.qty})),
+          puntos: puntosTotal,
+          vencePuntos: vencePuntos.getTime(), // opcional
+          createdAt: Date.now()
+        };
+      });
+
+      if (!res.committed) {
         msgTicket.className='validacion-msg err';
         msgTicket.textContent = "❌ Este ticket ya fue registrado.";
         return;
       }
 
-      // Límite por día (3)
-      const start = new Date(); start.setHours(0,0,0,0);
-      const end   = new Date(); end.setHours(23,59,59,999);
-      const daySnap = await ticketsRef
-        .where('createdAt','>=',firebase.firestore.Timestamp.fromDate(start))
-        .where('createdAt','<=',firebase.firestore.Timestamp.fromDate(end))
-        .get();
-      if (daySnap.size >= 3) {
-        msgTicket.className='validacion-msg err';
-        msgTicket.textContent = "⚠️ Ya registraste 3 tickets hoy.";
-        return;
-      }
+      // Sumar puntos al perfil (atómico)
+      await pointsRef.transaction(curr => (Number(curr)||0) + puntosTotal);
 
-      const docData = {
-        numero,
-        fecha: firebase.firestore.Timestamp.fromDate(fecha),
-        total: totalNum,
-        productos: productos.map(p=>({nombre:p.name, cantidad:p.qty})),
-        puntos, // { total, detalle[] }
-        vencePuntos: firebase.firestore.Timestamp.fromDate(vencePuntos),
-        textoOCR: '', // opcional: puedes guardar el texto si lo tienes
-        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-      };
-
-      await ticketsRef.add(docData);
       msgTicket.className='validacion-msg ok';
-      msgTicket.textContent = `✅ Ticket registrado. Puntos: ${puntos.total}`;
+      msgTicket.textContent = `✅ Ticket registrado. Puntos: ${puntosTotal}`;
       setTimeout(()=>{ window.location.href = 'panel.html'; }, 1200);
     } catch (e) {
       console.error(e);
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "Error al guardar el ticket. Revisa reglas de Firestore o inténtalo de nuevo.";
+      msgTicket.textContent = "No se pudo registrar el ticket. Revisa tu conexión o intenta de nuevo.";
     }
   }
 
@@ -679,7 +712,7 @@
     upsertProducto(btn.dataset.add, 1);
   });
 
-  btnRegistrar?.addEventListener('click', registrarTicket);
+  btnRegistrar?.addEventListener('click', registrarTicketRTDB);
 
   // ===== Init =====
   enableForm(false);
@@ -691,3 +724,4 @@
     setStatus("Para usar la cámara en móviles, abre el sitio con HTTPS.", "err");
   }
 })();
+
