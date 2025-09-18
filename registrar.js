@@ -1,8 +1,7 @@
-
 (() => {
   const $ = id => document.getElementById(id);
 
-  // ===== Firebase (usa tu firebase-config.js) =====
+  // ===== Firebase (usa tu firebase-config.js ya cargado) =====
   const auth = firebase.auth();
   const db   = firebase.database();
   console.log("Proyecto (registrar):", firebase.app().options.projectId);
@@ -10,8 +9,9 @@
   // ===== UI =====
   const fileInput    = $('ticketFile');
   const dropzone     = $('dropzone');
-  const btnCam       = $('btnAbrirCamara');
+  const btnPickFile  = $('btnSeleccionarArchivo');
 
+  const btnCam       = $('btnAbrirCamara');
   const modal        = $('cameraModal');
   const btnClose     = $('btnCerrarCamara');
   const video        = $('cameraVideo');
@@ -35,21 +35,21 @@
 
   const btnRegistrar = $('btnRegistrarTicket');
   const msgTicket    = $('ticketValidacion');
+  const greetEl      = $('userGreeting');
 
   const tablaPuntosBody = ($('tablaPuntos')||{}).querySelector?.('tbody');
   const totalPuntosEl   = $('totalPuntos');
-  const greetEl         = $('userGreeting');
 
-  // ===== Políticas de Puntos / Límites =====
-  const PUNTO_POR_CADA = 10;     // si no usas tabla por producto: 1 punto por cada $10
-  const VENCE_DIAS     = 180;    // si quieres guardar vencimiento fijo por ticket
-  const DAY_LIMIT      = 3;      // máx. tickets por día por usuario (ajústalo o pon 0 para desactivar)
+  // ===== Políticas =====
+  const PUNTO_POR_CADA = 10;     // 1 punto c/ $10
+  const VENCE_DIAS     = 180;    // vence en 180 días (opcional)
+  const DAY_LIMIT      = 3;      // máx. tickets por día por usuario (0 = sin límite)
 
   // ===== Estado =====
   let isLogged = false;
   let liveStream = null;
   let currentPreviewURL = null;
-  let productos = []; // [{name, qty}]
+  let productos = [];  // [{name, qty}]
   let ocrWorker = null;
 
   // ===== Catálogo / Puntos =====
@@ -65,7 +65,7 @@
   });
   const getPuntosUnit = (name) => Number(PUNTOS_MAP[name] || 0);
 
-  // ===== Producto lexicón (sinónimos) =====
+  // ===== Lexicón =====
   const PRODUCT_LEXICON = {
     "Hamburguesa Clásica": ["hamburguesa","hamb.","burger","hb","hbg","classic","clasica","clásica","sencilla","single"],
     "Hamburguesa Doble":   ["hamburguesa doble","hamb doble","doble","double","dbl"],
@@ -122,8 +122,6 @@
     if (fileInput) fileInput.files = dt.files;
     setPreview(file);
   }
-
-  // ===== Normalización y parsing =====
   function normalize(s){
     return String(s||'')
       .toLowerCase()
@@ -137,11 +135,8 @@
     let s = String(raw).replace(/[^\d.,]/g,'').trim();
     if(!s) return null;
     if(s.includes(',') && s.includes('.')){
-      if(s.lastIndexOf('.') > s.lastIndexOf(',')){
-        s = s.replace(/,/g,'');                  // 1,234.56 -> 1234.56
-      } else {
-        s = s.replace(/\./g,'').replace(',', '.'); // 1.234,56 -> 1234.56
-      }
+      if(s.lastIndexOf('.') > s.lastIndexOf(',')){ s = s.replace(/,/g,''); }
+      else { s = s.replace(/\./g,'').replace(',', '.'); }
     } else if(s.includes(',')){
       const m = s.match(/,\d{2}$/);
       s = m ? s.replace(',', '.') : s.replace(/,/g,'');
@@ -177,29 +172,28 @@
     const m = line.match(/(?:\$|\s)\s*([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2})?)\s*$/);
     return m ? parsePrice(m[1]) : null;
   }
+  function splitLinesForReceipt(text){
+    return text.split(/\n|\t|(?<=\d)\s{2,}(?=\D)/g)
+      .map(s=>s.trim())
+      .filter(Boolean);
+  }
   function parseItemsFromLines(lines){
     const items = [];
     for(let raw of lines){
       if(!raw) continue;
       const l = raw.trim();
       if(/subtotal|propina|servicio|iva|impuesto|total|cambio|pago|efectivo|tarjeta|metodo|método|metodo de pago/i.test(l)) continue;
-
       const price = extractLinePrice(l);
       const namePart = price!=null ? l.replace(/([^\d]|^)\$?\s*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})\s*$/,'').trim() : l;
-
       const qty = extractQty(namePart, 1);
-
       const cleanedName = namePart
         .replace(/(?:^|\s)\d{1,2}\s*x?(?=\s*[a-z])/i,' ')
         .replace(/(?:^|[^a-z0-9])x\s*\d{1,2}\b/i,' ')
         .replace(/\b\d{1,2}\s*(?:pz|pzas?|uds?|u|unidad(?:es)?|piezas?)\b/i,' ')
         .replace(/\s{2,}/g,' ')
         .trim();
-
       const canon = canonicalProductName(cleanedName);
-      if(canon){
-        items.push({ name: canon, qty, linePrice: price ?? null });
-      }
+      if(canon){ items.push({ name: canon, qty, linePrice: price ?? null }); }
     }
     const compact = [];
     for(const it of items){
@@ -213,17 +207,11 @@
     }
     return compact;
   }
-  function splitLinesForReceipt(text){
-    return text.split(/\n|\t|(?<=\d)\s{2,}(?=\D)/g)
-      .map(s=>s.trim())
-      .filter(Boolean);
-  }
   function parseOCR(text) {
     const raw = String(text||'');
     const clean = normalize(raw);
     const lines = splitLinesForReceipt(raw);
 
-    // Folio / número
     let numero = null;
     const idRX = [
       /(?:orden|order|folio|ticket|tkt|transac(?:cion)?|venta|nota|id|no\.?)\s*(?:#|:)?\s*([a-z0-9\-]{3,})/i,
@@ -238,7 +226,6 @@
       if(m) numero = m[1].toUpperCase();
     }
 
-    // Fecha
     let fechaISO = null;
     const fm = clean.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
     if(fm){
@@ -247,23 +234,15 @@
       fechaISO = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     }
 
-    // Total
     let total = null;
     const totalMatches = [...raw.matchAll(/^(?=.*total)(?!.*sub)(?!.*iva)(?!.*propina)(?!.*servicio).*?([$\s]*[0-9][0-9.,]*)\s*$/gmi)];
-    if(totalMatches.length){
-      total = parsePrice(totalMatches[totalMatches.length-1][1]);
-    }
+    if(totalMatches.length){ total = parsePrice(totalMatches[totalMatches.length-1][1]); }
     if(total==null){
       const amounts = [];
       for(const ln of raw.split('\n')){
         if(/subtotal|propina|servicio|iva/i.test(ln)) continue;
         const mm = ln.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|[0-9]+(?:[.,]\d{2}))/g);
-        if(mm){
-          mm.forEach(v=>{
-            const p = parsePrice(v);
-            if(p!=null) amounts.push(p);
-          });
-        }
+        if(mm){ mm.forEach(v=>{ const p = parsePrice(v); if(p!=null) amounts.push(p); }); }
       }
       if(amounts.length) total = Math.max(...amounts);
     }
@@ -326,7 +305,6 @@
 
     stopCamera();
 
-    // OpenCV opcional
     let dataURL;
     if (window.cv && window.cv.Mat) {
       try { dataURL = processWithOpenCV(c); }
@@ -373,7 +351,17 @@
       if (best) {
         const pts = [];
         for (let i=0;i<best.rows;i++) pts.push({x: best.data32S[i*2], y: best.data32S[i*2+1]});
-        const [tl,tr,br,bl] = orderQuad(pts);
+        const [tl,tr,br,bl] = (function orderQuad(pts){
+          const rect = new Array(4);
+          const s = pts.map(p=>p.x+p.y);
+          const d = pts.map(p=>p.y-p.x);
+          rect[0] = pts[s.indexOf(Math.min(...s))]; // tl
+          rect[2] = pts[s.indexOf(Math.max(...s))]; // br
+          rect[1] = pts[d.indexOf(Math.min(...d))]; // tr
+          rect[3] = pts[d.indexOf(Math.max(...d))]; // bl
+          return rect;
+        })(pts);
+
         const wA = Math.hypot(br.x-bl.x, br.y-bl.y);
         const wB = Math.hypot(tr.x-tl.x, tr.y-tl.y);
         const hA = Math.hypot(tr.x-br.x, tr.y-br.y);
@@ -402,17 +390,6 @@
       src.delete(); dst.delete(); gray.delete(); blurred.delete();
       canny.delete(); contours.delete(); hierarchy.delete(); if (best) best.delete();
     }
-
-    function orderQuad(pts){
-      const rect = new Array(4);
-      const s = pts.map(p=>p.x+p.y);
-      const d = pts.map(p=>p.y-p.x);
-      rect[0] = pts[s.indexOf(Math.min(...s))]; // tl
-      rect[2] = pts[s.indexOf(Math.max(...s))]; // br
-      rect[1] = pts[d.indexOf(Math.min(...d))]; // tr
-      rect[3] = pts[d.indexOf(Math.max(...d))]; // bl
-      return rect;
-    }
   }
 
   // ===== OCR (Tesseract) =====
@@ -436,6 +413,10 @@
   }
 
   async function ensureWorker(){
+    if (typeof Tesseract === 'undefined') {
+      setStatus("No se cargó Tesseract.js. Revisa tu conexión/CDN.", "err");
+      throw new Error('TESSERACT_NOT_LOADED');
+    }
     if (ocrWorker) return ocrWorker;
     const { createWorker } = Tesseract;
     ocrWorker = await createWorker({
@@ -476,7 +457,9 @@
       const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error('OCR_TIMEOUT')), OCR_TIMEOUT_MS));
       const data = await Promise.race([ocrPromise, timeout]);
 
-      const { numero, fecha, total, productosDetectados } = parseOCR(data.text || '');
+      const linesData = data?.text || '';
+      const parsed = parseOCR(linesData);
+      const { numero, fecha, total, productosDetectados } = parsed;
 
       if (numero) iNum && (iNum.value = numero);
       if (fecha)  iFecha && (iFecha.value = fecha);
@@ -591,13 +574,7 @@
     }
 
     // Calcula puntos: por productos si hay, si no por total
-    let puntosTotal = 0;
-    if (productos.length) {
-      const calc = getPuntosDetalle();
-      puntosTotal = calc.total;
-    } else {
-      puntosTotal = puntosDesdeTotal();
-    }
+    const puntosTotal = (productos.length ? getPuntosDetalle().total : puntosDesdeTotal());
     if (puntosTotal <= 0) {
       msgTicket.className='validacion-msg err';
       msgTicket.textContent = "El total no genera puntos (verifica los datos).";
@@ -606,16 +583,19 @@
 
     // Límite por día (opcional)
     if (DAY_LIMIT > 0) {
-      const { start, end } = startEndOfToday();
-      const daySnap = await db.ref(`users/${user.uid}/tickets`)
-        .orderByChild('createdAt')
-        .startAt(start).endAt(end)
-        .get();
-      const countToday = daySnap.exists() ? Object.keys(daySnap.val()).length : 0;
-      if (countToday >= DAY_LIMIT) {
-        msgTicket.className='validacion-msg err';
-        msgTicket.textContent = `⚠️ Ya registraste ${DAY_LIMIT} tickets hoy.`;
-        return;
+      try {
+        const { start, end } = startEndOfToday();
+        // compat seguro: once('value')
+        const qs = db.ref(`users/${user.uid}/tickets`).orderByChild('createdAt').startAt(start).endAt(end);
+        const snap = await qs.once('value'); // <— clave
+        const countToday = snap.exists() ? Object.keys(snap.val()).length : 0;
+        if (countToday >= DAY_LIMIT) {
+          msgTicket.className='validacion-msg err';
+          msgTicket.textContent = `⚠️ Ya registraste ${DAY_LIMIT} tickets hoy.`;
+          return;
+        }
+      } catch (err) {
+        console.warn('No pude verificar límite diario, continúo sin bloquear:', err);
       }
     }
 
@@ -632,9 +612,8 @@
         if (current) return; // ya existe → aborta
         return {
           folio,
-          fecha: fechaStr, // guardado como string 'YYYY-MM-DD'
+          fecha: fechaStr, // 'YYYY-MM-DD'
           total: totalNum,
-          // si quieres guardar el desglose por producto:
           productos: productos.map(p=>({nombre:p.name, cantidad:p.qty})),
           puntos: puntosTotal,
           vencePuntos: vencePuntos.getTime(), // opcional
@@ -657,11 +636,16 @@
     } catch (e) {
       console.error(e);
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "No se pudo registrar el ticket. Revisa tu conexión o intenta de nuevo.";
+      // Mensaje amigable si fallan reglas
+      if (String(e).includes('Permission denied')) {
+        msgTicket.textContent = "Permiso denegado por Realtime Database. Revisa las reglas (users/$uid/tickets) y los campos obligatorios.";
+      } else {
+        msgTicket.textContent = "No se pudo registrar el ticket. Revisa tu conexión e inténtalo de nuevo.";
+      }
     }
   }
 
-  // ===== Sesión (habilita/deshabilita Registrar) =====
+  // ===== Sesión =====
   auth.onAuthStateChanged(user => {
     isLogged = !!user;
     if (!user) {
@@ -669,11 +653,13 @@
       if (btnRegistrar) btnRegistrar.disabled = true;
     } else {
       if (greetEl) greetEl.textContent = `Registro de ticket — ${user.email}`;
-      if (btnRegistrar && !btnRegistrar.disabled) btnRegistrar.disabled = false;
+      // Si el formulario ya está habilitado (ej. tras “Editar manualmente”), permite registrar
+      if (btnRegistrar && !iNum.disabled) btnRegistrar.disabled = false;
     }
   });
 
   // ===== Eventos =====
+  btnPickFile?.addEventListener('click', ()=> fileInput?.click());
   btnCam?.addEventListener('click', openCamera);
   btnClose?.addEventListener('click', stopCamera);
   btnShot?.addEventListener('click', captureFrame);
@@ -683,8 +669,18 @@
     if (f) { setPreview(f); enableForm(true); setStatus("Imagen cargada. Puedes editar o usar OCR.", "ok"); }
   });
 
-  btnOCR?.addEventListener('click', procesarTicket);
-  btnEditar?.addEventListener('click', ()=>{ enableForm(true); setStatus("Edición manual habilitada.", "ok"); });
+  btnOCR?.addEventListener('click', ()=>{
+    if (!fileInput?.files?.length) {
+      setStatus("Adjunta imagen del ticket primero (o usa Editar manualmente).", "err");
+      return;
+    }
+    procesarTicket();
+  });
+
+  btnEditar?.addEventListener('click', ()=>{
+    enableForm(true);
+    setStatus("Edición manual habilitada. Puedes escribir folio, fecha, total, productos y registrar.", "ok");
+  });
 
   listaProd?.addEventListener('click', (e)=>{
     const btn = e.target.closest('button');
