@@ -1,3 +1,4 @@
+// registrar.js — RTDB + Cámara + OCR + Edición manual
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -56,12 +57,15 @@
   const CATALOGO = [
     "Hamburguesa Clásica","Hamburguesa Doble","Combo Hamburguesa",
     "Alitas","Boneless","Papas a la Francesa","Aros de Cebolla",
-    "Refresco","Malteada","Limonada","Ensalada","Postre","Cerveza"
+    "Refresco","Malteada","Limonada","Ensalada","Postre","Cerveza","Chilaquiles",
+    "American Sampler"
+
   ];
   const PUNTOS_MAP = Object.freeze({
     "Hamburguesa Clásica": 5, "Hamburguesa Doble": 7, "Combo Hamburguesa": 8,
     "Alitas": 5, "Boneless": 5, "Papas a la Francesa": 3, "Aros de Cebolla": 3,
-    "Refresco": 3, "Malteada": 4, "Limonada": 3, "Ensalada": 4, "Postre": 4, "Cerveza": 3
+    "Refresco": 3, "Malteada": 4, "Limonada": 3, "Ensalada": 4, "Postre": 4, "Cerveza": 3,
+    "Chilaquiles": 8,"Huevos Rancheros":7,"American Sampler":8 
   });
   const getPuntosUnit = (name) => Number(PUNTOS_MAP[name] || 0);
 
@@ -79,7 +83,11 @@
     "Limonada":            ["limonada","lim.","limon","lemonade"],
     "Ensalada":            ["ensalada","salad"],
     "Postre":              ["postre","dessert","brownie","pie","helado","nieve","pastel"],
-    "Cerveza":             ["cerveza","beer","victoria","corona","tecate","modelo","bohemia"]
+    "Cerveza":             ["cerveza","beer","victoria","corona","tecate","modelo","bohemia"],
+    "Chilaquiles":          ["Chilaquiles","Chilaquiles"],
+    "Huevos Rancheros":     ["HuevosRancheros","huevos rancheros","Huevos Rancheros"],
+    "American Sampler ":    ["Americansampler","American Sampler", "american sampler"]
+
   };
 
   // ===== Helpers =====
@@ -458,8 +466,7 @@
       const data = await Promise.race([ocrPromise, timeout]);
 
       const linesData = data?.text || '';
-      const parsed = parseOCR(linesData);
-      const { numero, fecha, total, productosDetectados } = parsed;
+      const { numero, fecha, total, productosDetectados } = parseOCR(linesData);
 
       if (numero) iNum && (iNum.value = numero);
       if (fecha)  iFecha && (iFecha.value = fecha);
@@ -585,9 +592,8 @@
     if (DAY_LIMIT > 0) {
       try {
         const { start, end } = startEndOfToday();
-        // compat seguro: once('value')
         const qs = db.ref(`users/${user.uid}/tickets`).orderByChild('createdAt').startAt(start).endAt(end);
-        const snap = await qs.once('value'); // <— clave
+        const snap = await qs.once('value');
         const countToday = snap.exists() ? Object.keys(snap.val()).length : 0;
         if (countToday >= DAY_LIMIT) {
           msgTicket.className='validacion-msg err';
@@ -636,7 +642,6 @@
     } catch (e) {
       console.error(e);
       msgTicket.className='validacion-msg err';
-      // Mensaje amigable si fallan reglas
       if (String(e).includes('Permission denied')) {
         msgTicket.textContent = "Permiso denegado por Realtime Database. Revisa las reglas (users/$uid/tickets) y los campos obligatorios.";
       } else {
@@ -653,7 +658,6 @@
       if (btnRegistrar) btnRegistrar.disabled = true;
     } else {
       if (greetEl) greetEl.textContent = `Registro de ticket — ${user.email}`;
-      // Si el formulario ya está habilitado (ej. tras “Editar manualmente”), permite registrar
       if (btnRegistrar && !iNum.disabled) btnRegistrar.disabled = false;
     }
   });
@@ -720,4 +724,3 @@
     setStatus("Para usar la cámara en móviles, abre el sitio con HTTPS.", "err");
   }
 })();
-
