@@ -7,11 +7,11 @@
   <link rel="icon" type="image/png" sizes="32x32" href="manzanas.png">
   <link rel="stylesheet" href="registrar.css" />
 
-  <!-- Firebase -->
+  <!-- Firebase (Compat) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <!-- Tu archivo con firebase.initializeApp(firebaseConfig) -->
   <script src="firebase-config.js"></script>
 
   <style>
@@ -36,7 +36,6 @@
     .video-wrap { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 12px; overflow: hidden; border:1px solid rgba(255,255,255,.08); }
     .video-wrap video, .video-wrap iframe { width: 100%; height: 100%; display: block; object-fit: cover; background: #000; }
 
-    /* Centrar el botón "Canjear puntos" */
     .redeem-wrap{
       display: flex;
       justify-content: center;
@@ -99,7 +98,7 @@
       <a class="btn-cta btn-redeem" href="canjear.html">Canjear puntos</a>
     </div>
 
-    <!-- ===== Video promocional / tutorial (debajo del historial) ===== -->
+    <!-- ===== Video promocional / tutorial ===== -->
     <section class="video-card hero">
       <h3>Promociones para ti</h3>
       <div class="video-wrap banner-349">
@@ -111,16 +110,20 @@
   </main>
 
   <script>
-    const db = firebase.firestore();
-    db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+    // ====== RTDB ======
+    const auth = firebase.auth();
+    const db   = firebase.database();
 
     const $ = (id)=>document.getElementById(id);
     const tbody = document.querySelector('#tablaTickets tbody');
 
+    // Config vencimiento de puntos (en días)
+    const VENCE_EN_DIAS = 180;
+
     // Salir
     document.getElementById('btnLogout').addEventListener('click', async () => {
       try {
-        await firebase.auth().signOut();
+        await auth.signOut();
         location.href = 'index.html';
       } catch (e) {
         console.error('Error al cerrar sesión:', e);
@@ -128,25 +131,28 @@
       }
     });
 
-    function fmtDate(ts) {
-      if (!ts) return '';
-      const d = ts.toDate ? ts.toDate() : new Date(ts);
+    // Helpers de fechas (RTDB guarda millis)
+    function fmtDate(millis) {
+      if (!millis) return '';
+      const d = new Date(millis);
       return d.toLocaleDateString('es-MX', { year:'numeric', month:'2-digit', day:'2-digit' });
     }
-    function daysLeft(ts) {
-      const d = ts?.toDate ? ts.toDate() : new Date(ts);
-      return Math.ceil((d - new Date()) / 86400000);
+    function daysLeft(millis) {
+      if (!millis) return -1;
+      return Math.ceil((millis - Date.now()) / 86400000);
     }
 
     // Estado global
-    let _tickets = [];         // docs de tickets
-    let _redemptions = [];     // docs de redemptions
+    let _tickets = [];         // array de tickets normalizados
+    let _redemptions = [];     // array de canjes normalizados
 
     function renderTableAndTicketStats() {
       let totalTickets=0, visitas=0, ptsActivosTickets=0, ptsVencidos=0, proximos=[];
+
       const rowsHtml = _tickets.map(t=>{
         totalTickets++; visitas++;
-        const pts = (t.puntos && t.puntos.total) || 0;
+        const pts = Number(t.puntos || 0);
+
         const left = t.vencePuntos ? daysLeft(t.vencePuntos) : -1;
         let estatus;
         if (!t.vencePuntos || left < 0) {
@@ -156,10 +162,11 @@
           estatus = '<span class="chip-exp ok">Activo</span>';
           if (left<=14 && pts>0) proximos.push({pts,left});
         }
+
         return `
           <tr>
-            <td>${t.numero||''}</td>
-            <td>${fmtDate(t.fecha)}</td>
+            <td>${t.numero || t.folio || ''}</td>
+            <td>${fmtDate(t.createdAt)}</td>
             <td>$${Number(t.total||0).toFixed(2)}</td>
             <td>${pts}</td>
             <td>${fmtDate(t.vencePuntos)}</td>
@@ -173,7 +180,6 @@
       $('statVisitas').textContent = visitas;
       $('statPuntosVencidos').textContent = ptsVencidos;
 
-      // Guardamos en window para que updateHeaderStats lo use sin recalcular
       window.__ptsActivosTickets = ptsActivosTickets;
       window.__proximos = proximos;
 
@@ -184,18 +190,14 @@
       const ptsActivosTickets = window.__ptsActivosTickets || 0;
       const proximos = window.__proximos || [];
 
-      // Cálculo de redemptions
-      const now = new Date();
+      const now = Date.now();
       const spentByRedeemed = _redemptions
         .filter(r => r.status === 'canjeado')
         .reduce((a,r)=> a + (Number(r.cost)||0), 0);
 
       const reservedPending = _redemptions
         .filter(r => r.status === 'pendiente')
-        .filter(r => {
-          const exp = r.expiresAt?.toDate ? r.expiresAt.toDate() : (r.expiresAt ? new Date(r.expiresAt) : null);
-          return exp && exp > now;
-        })
+        .filter(r => !r.expiresAt || r.expiresAt > now)
         .reduce((a,r)=> a + (Number(r.cost)||0), 0);
 
       const disponibles = Math.max(0, ptsActivosTickets - spentByRedeemed - reservedPending);
@@ -215,7 +217,8 @@
       tbody.innerHTML = `<tr><td colspan="6" class="err">${msg}</td></tr>`;
     }
 
-    firebase.auth().onAuthStateChanged((user) => {
+    // ====== Suscripción de datos (RTDB) ======
+    auth.onAuthStateChanged((user) => {
       if (!user) {
         $('userGreeting').textContent = "Inicia sesión";
         showError("No hay sesión activa.");
@@ -224,43 +227,42 @@
 
       $('userGreeting').textContent = `Hola, ${user.displayName||user.email}`;
 
-      // TICKETS
-      const tRef = db.collection('users').doc(user.uid).collection('tickets');
-      try {
-        tRef.orderBy('fecha','desc').onSnapshot(
-          (snap) => { _tickets = snap.docs.map(d=>d.data()); renderTableAndTicketStats(); },
-          (err) => {
-            console.warn("onSnapshot orderBy(fecha) falló:", err);
-            // Fallback sin orderBy
-            tRef.onSnapshot(
-              (snap2) => { _tickets = snap2.docs.map(d=>d.data()); renderTableAndTicketStats(); },
-              (err2) => showError("Error leyendo tickets: "+err2.message)
-            );
-          }
-        );
-      } catch (e) {
-        showError("Error iniciando lectura: "+e.message);
-      }
+      // TICKETS: users/{uid}/tickets
+      const tRef = db.ref(`users/${user.uid}/tickets`);
+      tRef.on('value', (snap) => {
+        const val = snap.val() || {};
+        _tickets = Object.values(val).map(t => {
+          const createdAt = Number(t.createdAt || 0);
+          const vencePuntos = t.vencePuntos
+            ? Number(t.vencePuntos)
+            : (createdAt ? createdAt + VENCE_EN_DIAS * 86400000 : null);
+          return {
+            ...t,
+            total: Number(t.total || 0),
+            puntos: Number(t.puntos || 0),
+            createdAt,
+            vencePuntos
+          };
+        });
+        _tickets.sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
+        renderTableAndTicketStats();
+      }, (err) => showError("Error leyendo tickets: " + err.message));
 
-      // REDEMPTIONS (para descontar reservados/canjeados)
-      const rRef = db.collection('users').doc(user.uid).collection('redemptions');
-      try {
-        rRef.orderBy('createdAt','desc').onSnapshot(
-          (snap) => {
-            _redemptions = snap.docs.map(d=>d.data());
-            updateHeaderStats();
-          },
-          (err) => {
-            console.warn("onSnapshot orderBy(createdAt) falló:", err);
-            rRef.onSnapshot(
-              (snap2) => { _redemptions = snap2.docs.map(d=>d.data()); updateHeaderStats(); },
-              (err2) => console.error("Error leyendo redemptions:", err2)
-            );
-          }
-        );
-      } catch (e) {
-        console.error("Error iniciando lectura redemptions:", e);
-      }
+      // REDEMPTIONS: users/{uid}/redemptions
+      // NOTA: al crear el canje (cliente) y al aprobar (gerente),
+      //       escribe/actualiza también este espejo para que el panel lo vea.
+      const rRef = db.ref(`users/${user.uid}/redemptions`);
+      rRef.on('value', (snap) => {
+        const val = snap.val() || {};
+        _redemptions = Object.values(val).map(r => ({
+          ...r,
+          cost: Number(r.cost || 0),
+          createdAt: Number(r.createdAt || 0),
+          expiresAt: r.expiresAt ? Number(r.expiresAt) : null,
+          status: String(r.status || '').toLowerCase() // 'pendiente' | 'canjeado'
+        }));
+        updateHeaderStats();
+      }, (err) => console.error("Error leyendo redemptions:", err));
     });
 
     // Autoplay del video
