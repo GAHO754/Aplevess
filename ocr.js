@@ -1,6 +1,7 @@
+
 /* ===========================
    ocr.js — SOLO OCR + PARSING
-   (No escribe a la BD. Rellena inputs y emite productos)
+   (No escribe a BD. Rellena inputs y emite productos)
    =========================== */
 
 /* ---------- Utils ---------- */
@@ -37,10 +38,12 @@ function splitLinesForReceipt(text){
     .filter(Boolean);
 }
 
+// Líneas que no son ítems: totales, impuestos, medios de pago, etc.
 function isMetaLine(line){
-  return /sub-?total|subtotal|iva|impuesto|impt\.?\.?total|total\s*:?$|reimpres|propina|mesa|clientes?|visa|tarjeta|auth|método|metodo|pago/i.test(line);
+  return /sub-?total|subtotal|iva|impuesto|impt\.?\.?total|^total\s*:?$|propina|mesa|clientes?|visa|master|tarjeta|auth|m[ée]todo|metodo|pago|cambio|efectivo/i.test(line);
 }
 
+// ¿La línea termina en precio?
 function lineEndsWithPrice(line){
   const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*$/);
   if(!m) return null;
@@ -50,7 +53,7 @@ function lineEndsWithPrice(line){
   return { namePart, price };
 }
 
-// Si tienes PRODUCT_LEXICON en registrar.js, lo respetamos si existe
+// Respeta PRODUCT_LEXICON si existe (registrar.js lo define); si no, usa el texto tal cual.
 function canonicalProductNameFree(txt){
   if (!window.PRODUCT_LEXICON) return txt;
   const norm = ' ' + String(txt||'').toLowerCase()
@@ -63,6 +66,55 @@ function canonicalProductNameFree(txt){
     }
   }
   return txt;
+}
+
+/* ---------- Fallback de folio en primeras líneas ---------- */
+function guessFolioFromLines(lines){
+  const top = lines.slice(0, 15);
+  for (const ln of top){
+    if (/\b\d{1,2}:\d{2}\b/i.test(ln)) continue; // ignora horas
+    if (/[$]/.test(ln)) continue;                // ignora precios
+    const m = ln.match(/\b\d{4,8}\b/);           // 4–8 dígitos
+    if (m) return m[0].toUpperCase();
+  }
+  return null;
+}
+
+/* ---------- Total robusto ---------- */
+function findGrandTotal(raw){
+  const lines = raw.split('\n').map(s=>s.trim()).filter(Boolean);
+
+  // Recorremos de abajo hacia arriba, evitando propina, impuestos y medios de pago
+  for (let i = lines.length-1; i >= 0; i--){
+    const ln = lines[i];
+    if (/\b(propina|tip|iva|impuesto|impt\.?\.?total|subtotal|visa|master|tarjeta|efectivo|cambio|pago)\b/i.test(ln)) continue;
+
+    // "TOTAL ... $xxx"
+    let m = ln.match(/\btotal\b.*?([$\s]*[0-9][0-9.,]*)\s*$/i);
+    if (m){
+      const n = parsePriceMX(m[1]);
+      if (n != null) return n;
+    }
+
+    // "TOTAL" en una línea y el importe en la siguiente
+    if (/\btotal\b/i.test(ln) && i+1 < lines.length){
+      const next = lines[i+1];
+      const mm = next.match(/^[$\s]*([0-9][0-9.,]*)\s*$/);
+      if (mm){
+        const n = parsePriceMX(mm[1]);
+        if (n != null) return n;
+      }
+    }
+  }
+
+  // Fallback: mayor cantidad sin palabras clave “iva/propina/subtotal”
+  const amounts = [];
+  for(const ln of lines){
+    if(/subtotal|propina|servicio|iva|impuesto|impt\.?\.?total/i.test(ln)) continue;
+    const mm = ln.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|[0-9]+(?:[.,]\d{2}))/g);
+    if(mm){ mm.forEach(v=>{ const p = parsePriceMX(v); if(p!=null) amounts.push(p); }); }
+  }
+  return amounts.length ? Math.max(...amounts) : null;
 }
 
 /* ---------- Productos desde líneas ---------- */
@@ -101,10 +153,21 @@ function parseItemsFromLines(lines){
       continue;
     }
 
+    // si la siguiente línea es sólo precio, guardamos el nombre aquí
+    const next = lines[i+1] || '';
+    const nextOnlyPrice = next.match(/^\$?\s*([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*$/);
+    if (!isMetaLine(line) && nextOnlyPrice){
+      const price = parsePriceMX(nextOnlyPrice[1]);
+      if (price != null && price > 0) {
+        PUSH(line, price);
+        i++; // consumimos la línea de precio
+        bufferName = '';
+        continue;
+      }
+    }
+
     // línea de nombre (posible wrap)
     if (line.length >= 3 && !/^\d{1,4}$/.test(line)) {
-      const next = lines[i+1] || '';
-      if (next && isMetaLine(next)) { bufferName = ''; continue; }
       bufferName = (bufferName ? (bufferName + ' ' + line) : line).trim();
     }
   }
@@ -121,7 +184,7 @@ function parseItemsFromLines(lines){
     }
   }
   compact.forEach(x => x.price = +(x.price.toFixed(2)));
-  return compact;
+  return compact.filter(p => p.price > 0);
 }
 
 /* ---------- Parseo principal (número, fecha, total, productos) ---------- */
@@ -129,16 +192,11 @@ function parseTicketText(text){
   const lines = splitLinesForReceipt(text);
   const all   = lines.join('\n');
 
-  // Número de ticket
+  // Número de ticket (etiquetado o heurístico)
   let numero = null;
   const tagged = all.match(/(?:orden|order|folio|ticket|tkt|transac(?:cion)?|venta|nota|id|no\.?)\s*(?:#|:)?\s*([a-z0-9\-]{3,})/i);
   if (tagged) numero = tagged[1].toUpperCase();
-  if (!numero) {
-    for (let i=0; i<Math.min(12, lines.length); i++){
-      const l = lines[i];
-      if (/^\d{4,8}$/.test(l)) { numero = l; break; }
-    }
-  }
+  if (!numero) numero = guessFolioFromLines(lines);
 
   // Fecha -> YYYY-MM-DD
   let fechaISO = null;
@@ -149,35 +207,16 @@ function parseTicketText(text){
     fechaISO = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
   }
 
-  // Total (última línea con “Total … <precio>”)
-  let total = null;
-  for (let i=0;i<lines.length;i++){
-    const l = lines[i];
-    if (/total/i.test(l)){
-      const m = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if (m && m.length){
-        const last = parsePriceMX(m[m.length-1]);
-        if (last!=null) total = last; // nos quedamos con la última encontrada
-      }
-    }
-  }
-  // Fallback: mayor importe si no se halló “Total …”
-  if (total == null){
-    const nums = [];
-    lines.forEach(l=>{
-      const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if(mm) mm.forEach(v=>{ const p = parsePriceMX(v); if(p!=null) nums.push(p); });
-    });
-    if (nums.length) total = Math.max(...nums);
-  }
+  // Total robusto (evita Impt.Total / Propina / Visa)
+  const totalNum = findGrandTotal(all);
 
-  // Renglones de productos (nombre … precio), ignorando promos 0.00
-  const productosDetectados = parseItemsFromLines(lines).filter(p => p.price > 0);
+  // Productos (nombre + precio)
+  const productosDetectados = parseItemsFromLines(lines);
 
   return {
     numero,
     fecha: fechaISO,
-    total: total!=null ? total.toFixed(2) : null,
+    total: totalNum!=null ? totalNum.toFixed(2) : null,
     productosDetectados // [{name, qty, price}]
   };
 }
@@ -236,17 +275,16 @@ async function leerTicket(){
 
     if (statusEl){
       statusEl.textContent = "✓ Ticket procesado. Verifica y presiona “Registrar”.";
-      statusEl.classList?.remove('loading-dots');
     }
   } catch(e){
     console.error(e);
     if (statusEl){
       statusEl.textContent = "❌ No pude leer el ticket. Intenta de nuevo con mejor iluminación.";
-      statusEl.classList?.remove('loading-dots');
     }
     alert("No se pudo leer el ticket. Prueba con más luz y encuadre recto.");
   }
 }
 
-// Activa el botón
+// Botón
 document.getElementById('btnProcesarTicket')?.addEventListener('click', leerTicket);
+
