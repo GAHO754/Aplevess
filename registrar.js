@@ -1,8 +1,8 @@
-// registrar.js — RTDB + Cámara + OCR + Edición manual
+// registrar.js — RTDB + Cámara + OCR + Edición manual (puntos auto 1–15)
 (() => {
   const $ = id => document.getElementById(id);
 
-  // ===== Firebase (usa tu firebase-config.js ya cargado) =====
+  // ===== Firebase =====
   const auth = firebase.auth();
   const db   = firebase.database();
   console.log("Proyecto (registrar):", firebase.app().options.projectId);
@@ -18,7 +18,7 @@
   const video        = $('cameraVideo');
   const btnShot      = $('btnCapturar');
 
-  const btnOCR       = $('btnProcesarTicket');
+  const btnOCR       = $('btnProcesarTicket');   // el handler real vive en ocr.js
   const btnEditar    = $('btnEditarManual');
   const ocrStatus    = $('ocrStatus');
 
@@ -31,9 +31,6 @@
   const nuevaCant    = $('nuevaCantidad');
   const btnAdd       = $('btnAgregarProducto');
 
-  const buscarProd   = $('buscarProducto');
-  const gridProd     = $('productosGrid');
-
   const btnRegistrar = $('btnRegistrarTicket');
   const msgTicket    = $('ticketValidacion');
   const greetEl      = $('userGreeting');
@@ -42,55 +39,161 @@
   const totalPuntosEl   = $('totalPuntos');
 
   // ===== Políticas =====
-  const PUNTO_POR_CADA = 10;     // 1 punto c/ $10
-  const VENCE_DIAS     = 180;    // vence en 180 días (opcional)
-  const DAY_LIMIT      = 3;      // máx. tickets por día por usuario (0 = sin límite)
+  const VENCE_DIAS = 180;  // vence en 180 días
+  const DAY_LIMIT  = 3;    // máx. tickets por día
 
   // ===== Estado =====
   let isLogged = false;
   let liveStream = null;
   let currentPreviewURL = null;
-  let productos = [];  // [{name, qty}]
-  let ocrWorker = null;
+  // productos = [{ name, qty, price, pointsUnit }]
+  let productos = [];
 
-  // ===== Catálogo / Puntos =====
-  const CATALOGO = [
-    "Hamburguesa Clásica","Hamburguesa Doble","Combo Hamburguesa",
-    "Alitas","Boneless","Papas a la Francesa","Aros de Cebolla",
-    "Refresco","Malteada","Limonada","Ensalada","Postre","Cerveza",
-    "Chilaquiles","Huevos Rancheros","American Sampler"
-  ];
-  const PUNTOS_MAP = Object.freeze({
-    "Hamburguesa Clásica": 5, "Hamburguesa Doble": 7, "Combo Hamburguesa": 8,
-    "Alitas": 5, "Boneless": 5, "Papas a la Francesa": 3, "Aros de Cebolla": 3,
-    "Refresco": 3, "Malteada": 4, "Limonada": 3, "Ensalada": 4, "Postre": 4, "Cerveza": 3,
-    "Chilaquiles": 8, "Huevos Rancheros": 7, "American Sampler": 8
-  });
-  const getPuntosUnit = (name) => Number(PUNTOS_MAP[name] || 0);
+  // ===========================================
+  //  Heurística de categorías y puntos (1–15)
+  // ===========================================
 
-  // ===== Lexicón (expone en window para ocr.js) =====
-  const PRODUCT_LEXICON = {
-    "Hamburguesa Clásica": ["hamburguesa","hamb.","burger","hb","hbg","classic","clasica","clásica","sencilla","single"],
-    "Hamburguesa Doble":   ["hamburguesa doble","hamb doble","doble","double","dbl"],
-    "Combo Hamburguesa":   ["combo","comb","cmb","paquete","meal","menú","menu"],
-    "Alitas":              ["alitas","wing","wings","wing's","wingz"],
-    "Boneless":            ["boneless","bonless","bonles","bon."],
-    "Papas a la Francesa": ["papas","francesa","french fries","fries","pap.","paps","papitas","papas a la francesa"],
-    "Aros de Cebolla":     ["aros","aros cebolla","anillos","onion rings","rings"],
-    "Refresco":            ["refresco","ref","soda","coca","pepsi","sprite","fanta","manzanita","bebida","soft"],
-    "Malteada":            ["malteada","shake","malte","maltead"],
-    "Limonada":            ["limonada","lim.","limon","lemonade"],
-    "Ensalada":            ["ensalada","salad"],
-    "Postre":              ["postre","dessert","brownie","pie","helado","nieve","pastel"],
-    "Cerveza":             ["cerveza","beer","victoria","corona","tecate","modelo","bohemia"],
-    "Chilaquiles":         ["chilaquiles","chilaqs"],
-    "Huevos Rancheros":    ["huevos rancheros","rancheros"],
-    "American Sampler":    ["american sampler","sampler","american-sampler"]
+  // Palabras clave (minúsculas, sin acentos) — amplio y orientado al menú Applebee’s MX
+  const KW = {
+    // Entradas / botanas
+    entradas: [
+      "entrada","sampler","appetizer","nachos","totopos","guacamole",
+      "spinach & artichoke","artichoke dip","mozzarella sticks",
+      "aros de cebolla","onion rings","elote","elotes","chicharron","chicharrón",
+      "chips","dip","wonton","queso fundido"
+    ],
+    // Alitas / boneless
+    alitas: ["alitas","wings","boneless","buffalo wings","bone in","bone-out","bone out","boneless buffalo"],
+    // Ensaladas / sopas
+    ensaladas: ["ensalada","salad","garden salad","caesar","oriental chicken salad","buffalo salad","santa fe salad"],
+    sopas: ["sopa","soup","chicken tortilla","sopa de tortilla","caldo","crema"],
+    // Hamburguesas
+    burgers: [
+      "burger","hamburguesa","cheese burger","cheeseburger","bacon","messy burger",
+      "cowboy burger","smash burger","double smash","bacon & cheddar","cheesy nacho",
+      "buffalo chicken burger","louisiana chicken burger","sizzling burger"
+    ],
+    // Pastas
+    pastas: [
+      "pasta","fettuccine","alfredo","pomodoro","three cheese","parmesana","parmigiana",
+      "chicken & broccoli","chicken parm","camarones blackened","shrimp pasta","lasagna","lasaña"
+    ],
+    // Costillas
+    costillas: ["costillas","ribs","riblets","double glazed ribs","old texas sampler","ribs platter","carnitas ribs"],
+    // Pollo
+    pollo: ["pollo","chicken","tenders","chicken tender","bourbon street chicken","fiesta lime chicken","crispy orange chicken","stuffed chicken"],
+    // Pescado / mariscos
+    pescado: ["pescado","salmon","salmón","grilled salmon","tilapia","camarones","shrimp","fish & chips","fish and chips"],
+    // Cortes / steak
+    cortes: ["steak","arrachera","house steak","bourbon street steak","sirloin","rib eye","ribeye","new york","ny steak","shrimp & parmesan steak"],
+    // Tex-Mex / mexicano fuerte
+    texmex: ["fajitas","faji-tsss","fajita","tacos","quesadillas","enchiladas","burrito","burritos","skillet","adobado","al pastor","asada","barbacoa","chile"],
+    // Acompañamientos
+    sides: ["papas","fries","french fries","pure","puré","puré de papa","mashed potato","arroz","frijoles","coleslaw","ensalada chica","side","guarnicion","guarnición","elote","maiz","maíz"],
+    // Postres
+    postres: [
+      "postre","dessert","brownie","fudge","sundae","helado","nieve","pastel","cheesecake",
+      "apple cheesecake","apple chimicheesecake","blondie","triple chocolate meltdown","churro","pay","pie"
+    ],
+    // Bebidas sin alcohol
+    bebidas: ["refresco","soda","coca","pepsi","sprite","fanta","manzanita","bebida","limonada","limon","limón","lemonade","agua","jugo","naranja","arándano","cranberry","smoothie","malteada","shake","iced tea","te helado","té helado"],
+    // Bebidas calientes
+    calientes: ["cafe","café","capuchino","capuccino","latte","espresso","te","té","chocolate caliente"],
+    // Alcohol (sin coctel)
+    alcohol: ["cerveza","beer","vino","tinto","blanco","rosado","rosé","mezcal","tequila","whisky","ron","vodka","gin"],
+    // Coctelería
+    cocteles: ["margarita","perfect margarita","mojito","paloma","cantarito","martini","piña colada","pina colada","azulito","bucket","cuba","daiquiri","spritz","aperol","gin tonic","tonic"]
   };
-  // HAZ visible el lexicón para ocr.js:
-  window.PRODUCT_LEXICON = PRODUCT_LEXICON;
 
-  // ===== Helpers =====
+  // Rangos de puntos por categoría
+  const POINT_RANGES = {
+    // fuertes
+    burgers: [7, 15],
+    costillas: [7, 15],
+    cortes: [7, 15],
+    pescado: [6, 14],
+    pollo: [6, 13],
+    pastas: [6, 13],
+    texmex: [6, 14],
+    // medios / sides
+    alitas: [4, 10],
+    entradas: [3, 9],
+    ensaladas: [3, 9],
+    sopas: [3, 8],
+    sides: [2, 6],
+    // bebidas y postres
+    postres: [4, 10],
+    cocteles: [4, 10],
+    alcohol: [3, 9],
+    bebidas: [2, 7],
+    calientes: [2, 6],
+    // fallback
+    other: [1, 5]
+  };
+
+  // hash determinista de string => entero
+  function hashInt(str){
+    let h = 2166136261 >>> 0; // FNV-1a
+    for (let i=0; i<str.length; i++){
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+  // aleatorio determinista [min,max] con semilla
+  function seededRandInt(seed, min, max){
+    const x = hashInt(String(seed));
+    const r = (x % 10000) / 10000; // 0..1
+    return Math.floor(min + r * (max - min + 1));
+  }
+
+  // Detección de categoría por nombre normalizado
+  function detectCategory(name) {
+    const n = String(name || "").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+
+    // Prioridad: fuertes > medios > bebidas/postres > sides > fallback
+    if (KW.burgers.some(k => n.includes(k)))      return "burgers";
+    if (KW.costillas.some(k => n.includes(k)))    return "costillas";
+    if (KW.cortes.some(k => n.includes(k)))       return "cortes";
+    if (KW.pescado.some(k => n.includes(k)))      return "pescado";
+    if (KW.pollo.some(k => n.includes(k)))        return "pollo";
+    if (KW.pastas.some(k => n.includes(k)))       return "pastas";
+    if (KW.texmex.some(k => n.includes(k)))       return "texmex";
+
+    if (KW.alitas.some(k => n.includes(k)))       return "alitas";
+    if (KW.entradas.some(k => n.includes(k)))     return "entradas";
+    if (KW.ensaladas.some(k => n.includes(k)))    return "ensaladas";
+    if (KW.sopas.some(k => n.includes(k)))        return "sopas";
+
+    if (KW.postres.some(k => n.includes(k)))      return "postres";
+    if (KW.cocteles.some(k => n.includes(k)))     return "cocteles";
+    if (KW.alcohol.some(k => n.includes(k)))      return "alcohol";
+    if (KW.bebidas.some(k => n.includes(k)))      return "bebidas";
+    if (KW.calientes.some(k => n.includes(k)))    return "calientes";
+
+    if (KW.sides.some(k => n.includes(k)))        return "sides";
+
+    return "other";
+  }
+
+  // Asignación de puntos 1–15 (determinista por nombre y precio)
+  function assignPointsForProduct(name, price){
+    let cat = detectCategory(name);
+    let [minP, maxP] = POINT_RANGES[cat] || POINT_RANGES.other;
+
+    // si no se detectó categoría, usa el precio para “elevar” el rango
+    if (cat === "other" && typeof price === "number") {
+      if (price >= 250) [minP, maxP] = [10, 15];
+      else if (price >= 120) [minP, maxP] = [5, 9];
+      else [minP, maxP] = [1, 5];
+    }
+
+    const seed = `${name}|${Math.round(price||0)}`;
+    return seededRandInt(seed, minP, maxP);
+  }
+
+  // ===== Helpers de UI =====
   function setStatus(msg, type='') {
     if (!ocrStatus) return;
     ocrStatus.className = 'validacion-msg';
@@ -98,7 +201,7 @@
     ocrStatus.textContent = msg || '';
   }
   function enableForm(on) {
-    [iNum, iFecha, iTotal, nuevoProd, nuevaCant, btnAdd, buscarProd].forEach(x => x && (x.disabled = !on));
+    [iNum, iFecha, iTotal, nuevoProd, nuevaCant, btnAdd].forEach(x => x && (x.disabled = !on));
     if (btnRegistrar) btnRegistrar.disabled = !on || !isLogged;
   }
   function setPreview(file) {
@@ -130,136 +233,10 @@
     if (fileInput) fileInput.files = dt.files;
     setPreview(file);
   }
-  function normalize(s){
-    return String(s||'')
-      .toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-      .replace(/[^\w$%#./,:\- \t\n]/g,' ')
-      .replace(/\s+/g,' ')
-      .trim();
-  }
-  function parsePrice(raw){
-    if(!raw) return null;
-    let s = String(raw).replace(/[^\d.,]/g,'').trim();
-    if(!s) return null;
-    if(s.includes(',') && s.includes('.')){
-      if(s.lastIndexOf('.') > s.lastIndexOf(',')){ s = s.replace(/,/g,''); }
-      else { s = s.replace(/\./g,'').replace(',', '.'); }
-    } else if(s.includes(',')){
-      const m = s.match(/,\d{2}$/);
-      s = m ? s.replace(',', '.') : s.replace(/,/g,'');
-    }
-    const n = parseFloat(s);
-    return Number.isFinite(n) ? +(n.toFixed(2)) : null;
-  }
-  function canonicalProductName(freeText){
-    const txt = ' ' + normalize(freeText) + ' ';
-    for (const [canon, syns] of Object.entries(PRODUCT_LEXICON)){
-      for(const kw of syns){
-        const k = ' ' + normalize(kw) + ' ';
-        if(txt.includes(k)) return canon;
-      }
-    }
-    return null;
-  }
-  function extractQty(line, fallback=1){
-    let qty = null;
-    let m = line.match(/(?:^|\s)(\d{1,2})\s*x?(?=\s*[a-z])/i);
-    if(m) qty = parseInt(m[1],10);
-    if(qty==null){
-      m = line.match(/(?:^|[^a-z0-9])x?\s*(\d{1,2})\s*(?:pz|pzas?|uds?|u|unidad(?:es)?|piezas?)\b/i);
-      if(m) qty = parseInt(m[1],10);
-    }
-    if(qty==null){
-      m = line.match(/(\d{1,2})\s*(?:pz|pzas?|uds?|u|unidad(?:es)?|piezas?)\b/i);
-      if(m) qty = parseInt(m[1],10);
-    }
-    return qty ?? fallback;
-  }
-  function extractLinePrice(line){
-    const m = line.match(/(?:\$|\s)\s*([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2})?)\s*$/);
-    return m ? parsePrice(m[1]) : null;
-  }
-  function splitLinesForReceipt(text){
-    return text.split(/\n|\t|(?<=\d)\s{2,}(?=\D)/g)
-      .map(s=>s.trim())
-      .filter(Boolean);
-  }
-  function parseItemsFromLines(lines){
-    const items = [];
-    for(let raw of lines){
-      if(!raw) continue;
-      const l = raw.trim();
-      if(/subtotal|propina|servicio|iva|impuesto|total|cambio|pago|efectivo|tarjeta|metodo|método|metodo de pago/i.test(l)) continue;
-      const price = extractLinePrice(l);
-      const namePart = price!=null ? l.replace(/([^\d]|^)\$?\s*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})\s*$/,'').trim() : l;
-      const qty = extractQty(namePart, 1);
-      const cleanedName = namePart
-        .replace(/(?:^|\s)\d{1,2}\s*x?(?=\s*[a-z])/i,' ')
-        .replace(/(?:^|[^a-z0-9])x\s*\d{1,2}\b/i,' ')
-        .replace(/\b\d{1,2}\s*(?:pz|pzas?|uds?|u|unidad(?:es)?|piezas?)\b/i,' ')
-        .replace(/\s{2,}/g,' ')
-        .trim();
-      const canon = canonicalProductName(cleanedName);
-      if(canon){ items.push({ name: canon, qty, linePrice: price ?? null }); }
-    }
-    const compact = [];
-    for(const it of items){
-      const i = compact.findIndex(x=>x.name===it.name);
-      if(i>=0){
-        compact[i].qty += it.qty;
-        if(it.linePrice!=null) compact[i].linePrice = (compact[i].linePrice??0) + it.linePrice;
-      }else{
-        compact.push({...it});
-      }
-    }
-    return compact;
-  }
-  function parseOCR(text) {
-    const raw = String(text||'');
-    const clean = normalize(raw);
-    const lines = splitLinesForReceipt(raw);
 
-    let numero = null;
-    const idRX = [
-      /(?:orden|order|folio|ticket|tkt|transac(?:cion)?|venta|nota|id|no\.?)\s*(?:#|:)?\s*([a-z0-9\-]{3,})/i,
-      /(?:ord\.?|ordnum)\s*(?:#|:)?\s*([a-z0-9\-]{3,})/i
-    ];
-    for(const rx of idRX){
-      const m = raw.match(rx) || clean.match(rx);
-      if(m){ numero = m[1].toUpperCase(); break; }
-    }
-    if(!numero){
-      const m = raw.match(/(?:orden|order)\s*(?:#|:)?\s*([A-Za-z0-9\-]+)/i);
-      if(m) numero = m[1].toUpperCase();
-    }
-
-    let fechaISO = null;
-    const fm = clean.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
-    if(fm){
-      let d = +fm[1], m = +fm[2], y = +fm[3];
-      if (d<=12 && m>12) [d,m] = [m,d];
-      fechaISO = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    }
-
-    let total = null;
-    const totalMatches = [...raw.matchAll(/^(?=.*total)(?!.*sub)(?!.*iva)(?!.*propina)(?!.*servicio).*?([$\s]*[0-9][0-9.,]*)\s*$/gmi)];
-    if(totalMatches.length){ total = parsePrice(totalMatches[totalMatches.length-1][1]); }
-    if(total==null){
-      const amounts = [];
-      for(const ln of raw.split('\n')){
-        if(/subtotal|propina|servicio|iva/i.test(ln)) continue;
-        const mm = ln.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|[0-9]+(?:[.,]\d{2}))/g);
-        if(mm){ mm.forEach(v=>{ const p = parsePrice(v); if(p!=null) amounts.push(p); }); }
-      }
-      if(amounts.length) total = Math.max(...amounts);
-    }
-
-    const productosDetectados = parseItemsFromLines(lines);
-    return { numero, fecha: fechaISO, total: total!=null ? total.toFixed(2) : null, productosDetectados };
-  }
-
-  // ===== Cámara =====
+  // ======================
+  // Cámara (con OpenCV)
+  // ======================
   async function openCamera() {
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -324,8 +301,9 @@
     setFileInputFromBlob(blob, `ticket_${Date.now()}.jpg`);
 
     enableForm(true);
-    setStatus("Foto capturada. Procesando OCR…", "ok");
-    procesarTicket();
+    setStatus("Foto capturada. Procesa con OCR…", "ok");
+    // Dispara el flujo de OCR global (definido en ocr.js):
+    btnOCR?.click();
   }
   function processWithOpenCV(canvasEl) {
     const cv = window.cv;
@@ -400,102 +378,30 @@
     }
   }
 
-  // ===== OCR (Tesseract) =====
-  const WORKER_PATH = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js';
-  const CORE_PATH   = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js';
-  const LANG_PATH   = 'https://tessdata.projectnaptha.com/4.0.0_fast';
-  const OCR_TIMEOUT_MS = 25000;
-
-  async function prepareForOCR(file){
-    const img = await createImageBitmap(file);
-    const targetH = 2000;
-    const scale = Math.min(2.4, Math.max(1, targetH / img.height));
-    const c = Object.assign(document.createElement('canvas'), {
-      width: Math.round(img.width*scale),
-      height: Math.round(img.height*scale)
-    });
-    const ctx = c.getContext('2d');
-    ctx.filter = 'grayscale(1) contrast(1.18) brightness(1.06)';
-    ctx.drawImage(img, 0, 0, c.width, c.height);
-    return await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
-  }
-
-  async function ensureWorker(){
-    if (typeof Tesseract === 'undefined') {
-      setStatus("No se cargó Tesseract.js. Revisa tu conexión/CDN.", "err");
-      throw new Error('TESSERACT_NOT_LOADED');
-    }
-    if (ocrWorker) return ocrWorker;
-    const { createWorker } = Tesseract;
-    ocrWorker = await createWorker({
-      workerPath: WORKER_PATH,
-      corePath: CORE_PATH,
-      langPath: LANG_PATH,
-      logger: m => {
-        if (m.status && m.progress != null) {
-          const p = Math.round(m.progress*100);
-          setStatus(`${m.status.replace(/_/g,' ')}… ${p}%`);
-        }
-      }
-    });
-    await ocrWorker.loadLanguage('spa+eng');
-    await ocrWorker.initialize('spa+eng');
-    await ocrWorker.setParameters({
-      tessedit_pageseg_mode: '6',
-      preserve_interword_spaces: '1',
-      user_defined_dpi: '300',
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$., '
-    });
-    return ocrWorker;
-  }
-
-  async function procesarTicket() {
-    const file = fileInput?.files?.[0];
-    if (!file) { setStatus("Primero adjunta o toma la foto del ticket.", "err"); return; }
-
-    setStatus("Cargando OCR… 0%");
-    enableForm(false);
-    msgTicket && (msgTicket.textContent = '');
-
-    try {
-      const worker = await ensureWorker();
-      const blob = await prepareForOCR(file);
-
-      const ocrPromise = worker.recognize(blob).then(r=>r.data);
-      const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error('OCR_TIMEOUT')), OCR_TIMEOUT_MS));
-      const data = await Promise.race([ocrPromise, timeout]);
-
-      const linesData = data?.text || '';
-      const { numero, fecha, total, productosDetectados } = parseOCR(linesData);
-
-      if (numero) iNum && (iNum.value = numero);
-      if (fecha)  iFecha && (iFecha.value = fecha);
-      if (total)  iTotal && (iTotal.value = parseFloat(total).toFixed(2));
-
-      // limpiar y rellenar productos
-      productos = [];
-      productosDetectados.forEach(p => upsertProducto(p.name, p.qty));
-
-      setStatus("✓ Ticket procesado. Verifica/ajusta los campos.", "ok");
-    } catch (e) {
-      console.warn("OCR error:", e);
-      setStatus(String(e?.message).includes('OCR_TIMEOUT')
-        ? "OCR tardó demasiado. Habilité edición manual."
-        : "No pude leer el ticket. Prueba con más luz o edita manualmente.", "err");
-    } finally {
-      enableForm(true);
-    }
-  }
-
-  // ===== Productos UI =====
-  function upsertProducto(nombre, cantidad=1) {
+  // ======================
+  // Productos (UI + puntos)
+  // ======================
+  function upsertProducto(nombre, cantidad=1, price=null) {
     nombre = String(nombre||'').trim();
     if (!nombre) return;
+
+    // Asigna puntos unitarios automáticos 1–15 (deterministas)
+    const pts = assignPointsForProduct(nombre, typeof price === 'number' ? price : null);
+
     const idx = productos.findIndex(p => p.name.toLowerCase() === nombre.toLowerCase());
-    if (idx >= 0) productos[idx].qty += cantidad;
-    else productos.push({ name: nombre, qty: cantidad });
+    if (idx >= 0) {
+      productos[idx].qty += cantidad;
+      // mantenemos mismos puntos unitarios; actualiza precio acumulado si viene
+      if (typeof price === 'number') {
+        const prevPrice = Number(productos[idx].price || 0);
+        productos[idx].price = +(prevPrice + price).toFixed(2);
+      }
+    } else {
+      productos.push({ name: nombre, qty: cantidad, price: price ?? null, pointsUnit: pts });
+    }
     renderProductos();
   }
+
   function renderProductos() {
     if (!listaProd) return;
     listaProd.innerHTML = '';
@@ -509,53 +415,46 @@
           <strong>${p.qty}</strong>
           <button type="button" data-act="+" data-name="${p.name}">+</button>
         </span>
+        <span class="pts">${p.pointsUnit} pts/u</span>
         <button type="button" data-act="x" data-name="${p.name}">✕</button>
       `;
       listaProd.appendChild(chip);
     });
     updatePuntosResumen();
   }
-  function renderCatalogo(filtro='') {
-    const f = filtro.trim().toLowerCase();
-    if (!gridProd) return;
-    gridProd.innerHTML = '';
-    CATALOGO.filter(n=>n.toLowerCase().includes(f)).forEach(n=>{
-      const card = document.createElement('div');
-      card.className = 'card-prod';
-      card.innerHTML = `<span class="prod-name">${n}</span><button type="button" class="btn-primary" data-add="${n}">Agregar</button>`;
-      gridProd.appendChild(card);
-    });
-  }
+
   function updatePuntosResumen() {
     if (!tablaPuntosBody) return;
     tablaPuntosBody.innerHTML = '';
     let total = 0;
     productos.forEach(p=>{
-      const u = getPuntosUnit(p.name);
-      const sub = u * p.qty;
+      const sub = p.pointsUnit * p.qty;
       total += sub;
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${p.name}</td><td>${p.qty}</td><td>${u}</td><td>${sub}</td>`;
+      tr.innerHTML = `<td>${p.name}</td><td>${p.qty}</td><td>${p.pointsUnit}</td><td>${sub}</td>`;
       tablaPuntosBody.appendChild(tr);
     });
     if (totalPuntosEl) totalPuntosEl.textContent = String(total);
   }
+
   function getPuntosDetalle() {
     let total = 0;
     const detalle = productos.map(p=>{
-      const u = getPuntosUnit(p.name);
-      const sub = u * p.qty;
+      const sub = p.pointsUnit * p.qty;
       total += sub;
-      return { producto: p.name, cantidad: p.qty, puntos_unitarios: u, puntos_subtotal: sub };
+      return {
+        producto: p.name,
+        cantidad: p.qty,
+        puntos_unitarios: p.pointsUnit,
+        puntos_subtotal: sub
+      };
     });
     return { total, detalle };
   }
-  function puntosDesdeTotal() {
-    const totalNum = parseFloat(iTotal.value || "0") || 0;
-    return Math.floor(totalNum / PUNTO_POR_CADA);
-  }
 
-  // ===== Guardar en RTDB =====
+  // ======================
+  // Guardar en RTDB
+  // ======================
   function addMonths(date, months){ const d=new Date(date.getTime()); d.setMonth(d.getMonth()+months); return d; }
   function startEndOfToday() {
     const s = new Date(); s.setHours(0,0,0,0);
@@ -581,15 +480,15 @@
       return;
     }
 
-    // Calcula puntos: por productos si hay, si no por total
-    const puntosTotal = (productos.length ? getPuntosDetalle().total : puntosDesdeTotal());
+    // Puntos desde productos detectados
+    const { total: puntosTotal, detalle } = getPuntosDetalle();
     if (puntosTotal <= 0) {
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "El total no genera puntos (verifica los datos).";
+      msgTicket.textContent = "No se detectaron consumos con puntos. Revisa los productos o edita manualmente.";
       return;
     }
 
-    // Límite por día (opcional)
+    // Límite por día
     if (DAY_LIMIT > 0) {
       try {
         const { start, end } = startEndOfToday();
@@ -621,9 +520,14 @@
           folio,
           fecha: fechaStr, // 'YYYY-MM-DD'
           total: totalNum,
-          productos: productos.map(p=>({nombre:p.name, cantidad:p.qty})),
-          puntos: puntosTotal,
-          vencePuntos: vencePuntos.getTime(), // opcional
+          productos: productos.map(p=>({
+            nombre: p.name,
+            cantidad: p.qty,
+            precioLinea: p.price ?? null,
+            puntos_unitarios: p.pointsUnit
+          })),
+          puntos: { total: puntosTotal, detalle },
+          vencePuntos: vencePuntos.getTime(),
           createdAt: Date.now()
         };
       });
@@ -651,7 +555,9 @@
     }
   }
 
-  // ===== Sesión =====
+  // ======================
+  // Sesión
+  // ======================
   auth.onAuthStateChanged(user => {
     isLogged = !!user;
     if (!user) {
@@ -663,7 +569,9 @@
     }
   });
 
-  // ===== Eventos =====
+  // ======================
+  // Eventos
+  // ======================
   btnPickFile?.addEventListener('click', ()=> fileInput?.click());
   btnCam?.addEventListener('click', openCamera);
   btnClose?.addEventListener('click', stopCamera);
@@ -679,7 +587,7 @@
       setStatus("Adjunta imagen del ticket primero (o usa Editar manualmente).", "err");
       return;
     }
-    procesarTicket();
+    // el procesamiento real lo hace ocr.js -> leerTicket()
   });
 
   btnEditar?.addEventListener('click', ()=>{
@@ -702,24 +610,16 @@
   btnAdd?.addEventListener('click', ()=>{
     const n = (nuevoProd.value || '').trim();
     const c = Math.max(1, parseInt(nuevaCant.value||"1", 10));
-    if (n) upsertProducto(n, c);
+    if (n) upsertProducto(n, c, null);
     nuevoProd.value=''; nuevaCant.value='';
   });
 
-  buscarProd?.addEventListener('input', e=>renderCatalogo(e.target.value));
-  gridProd?.addEventListener('click', (e)=>{
-    const btn = e.target.closest('button[data-add]');
-    if (!btn) return;
-    upsertProducto(btn.dataset.add, 1);
-  });
-
-  // === Integra productos detectados por OCR.js ===
+  // Integra productos detectados por ocr.js
   document.addEventListener('ocr:productos', (ev) => {
-    const det = ev.detail || [];
-    // Resetea y agrega
+    const det = ev.detail || []; // [{name, qty, price}]
     productos = [];
     if (Array.isArray(det)) {
-      det.forEach(p => upsertProducto(p.name, p.qty || 1));
+      det.forEach(p => upsertProducto(p.name, p.qty || 1, typeof p.price==='number' ? p.price : null));
     }
   });
 
@@ -727,7 +627,6 @@
 
   // ===== Init =====
   enableForm(false);
-  renderCatalogo('');
   updatePuntosResumen();
 
   if ((!window.isSecureContext && location.hostname !== 'localhost') ||
