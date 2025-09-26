@@ -37,10 +37,12 @@ function splitLinesForReceipt(text){
     .filter(Boolean);
 }
 
+// líneas “meta” que NO son producto
 function isMetaLine(line){
-  return /sub-?total|subtotal|iva|impuesto|impt\.?\.?total|total\s*:?$|reimpres|propina|mesa|clientes?|visa|tarjeta|auth|método|metodo|pago/i.test(line);
+  return /sub-?total|subtotal|iva|impuesto|impt\.?\.?total|^total\s*$|^total\s*:|reimpres|propina|servicio|service|mesa|clientes?|visa|master|tarjeta|auth|autoriz|método|metodo|pago|efectivo|cambio/i.test(line);
 }
 
+// ¿acaba con un precio?
 function lineEndsWithPrice(line){
   const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*$/);
   if(!m) return null;
@@ -50,7 +52,7 @@ function lineEndsWithPrice(line){
   return { namePart, price };
 }
 
-/* ---------- Detección robusta de NÚMERO de ticket ---------- */
+/* ---------- NÚMERO de ticket robusto ---------- */
 function isLikelyPrice(s) {
   return /[$]\s*\d|^\s*\d{1,3}([.,]\d{3})*([.,]\d{2})\s*$/.test(s);
 }
@@ -84,16 +86,13 @@ function extractTicketNumber(lines, allText) {
     }
   }
 
-  // 2) Candidatos 4–8 dígitos; puntuación por cercanía a “Mesero/Mesa/Clientes/Reimpresión” y fecha/hora
+  // 2) Candidatos 4–8 dígitos; puntuación por cercanía a Mesero/Mesa/Clientes/Reimpresión y fecha/hora
   const nearWords = ["mesero","mesa","clientes","reimpres","reimpresión","reimpresion","cajero"];
   const candidates = [];
-
-  for (let i = 0; i < Math.min(lines.length, 40); i++) {
-    const raw = lines[i];
-    if (!raw) continue;
+  for (let i = 0; i < Math.min(lines.length, 45); i++) {
+    const raw = lines[i]; if (!raw) continue;
     const line = raw.trim();
     const tokens = tokenizeLine(line);
-
     tokens.forEach(tok => {
       if (/^\d{4,8}$/.test(tok)) {
         const num = parseInt(tok, 10);
@@ -106,13 +105,12 @@ function extractTicketNumber(lines, allText) {
         nearWords.forEach(w => { if (low.includes(' ' + w + ' ')) score += 2; });
         if (dateTok && line.includes(dateTok.raw)) score += 2;
         if (timeTok && line.includes(timeTok.raw)) score += 2;
-        if (i <= 10) score += 1; // más arriba en el ticket
+        if (i <= 12) score += 1; // suele ir en la parte alta
 
         candidates.push({ tok, score });
       }
     });
   }
-
   if (candidates.length) {
     candidates.sort((a,b)=> b.score - a.score);
     return String(candidates[0].tok).toUpperCase();
@@ -124,7 +122,6 @@ function extractTicketNumber(lines, allText) {
     const m = l.match(/(?:^|\s)(\d{4,8})(?:\s|$)/);
     if (m && !isLikelyPrice(l)) return m[1].toUpperCase();
   }
-
   return null;
 }
 
@@ -135,7 +132,7 @@ function parseItemsFromLines(lines){
 
   const PUSH = (name, price) => {
     if(!name) return;
-    // cantidad: “x2”, “2x”, “2 …”
+    // cantidad: x2 / 2x / “2 ” al inicio
     let qty = 1;
     const qm = name.match(/(?:^|\s)(?:x\s*)?(\d{1,2})(?:\s*x)?(?:\s|$)/i);
     if(qm) qty = Math.max(1, parseInt(qm[1],10));
@@ -144,7 +141,7 @@ function parseItemsFromLines(lines){
       .replace(/\s{2,}/g,' ')
       .trim();
 
-    // ignora promos típicas con precio 0
+    // ignora promos típicas precio 0
     if (/2x1|bono|desc|promo|promoción|desayunos/i.test(name) && price === 0) return;
 
     items.push({ name, qty, price });
@@ -163,7 +160,7 @@ function parseItemsFromLines(lines){
       continue;
     }
 
-    // línea de nombre (posible wrap)
+    // posible wrap de nombre
     if (line.length >= 3 && !/^\d{1,4}$/.test(line)) {
       const next = lines[i+1] || '';
       if (next && isMetaLine(next)) { bufferName = ''; continue; }
@@ -171,7 +168,7 @@ function parseItemsFromLines(lines){
     }
   }
 
-  // Compactar por nombre (suma qty y precio)
+  // compacta por nombre
   const compact = [];
   for(const it of items){
     const j = compact.findIndex(x => x.name.toLowerCase() === it.name.toLowerCase());
@@ -186,15 +183,55 @@ function parseItemsFromLines(lines){
   return compact;
 }
 
+/* ---------- TOTAL pagado (incluyendo propina) ---------- */
+function detectGrandTotal(lines){
+  // 1) Busca “Propina” y toma el último “Total” después de eso
+  let propIndex = -1;
+  for (let i=0;i<lines.length;i++){
+    if (/propina|servicio|service/i.test(lines[i])) propIndex = i;
+  }
+  if (propIndex >= 0) {
+    for (let j=lines.length-1; j>propIndex; j--){
+      const l = lines[j];
+      if (/\btotal\b/i.test(l) && !/impt|imp\.?t|iva|sub/i.test(l)) {
+        const m = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
+        if (m && m.length){
+          const last = parsePriceMX(m[m.length-1]);
+          if (last!=null) return last;
+        }
+      }
+    }
+  }
+  // 2) Si no hubo propina, toma el ÚLTIMO “Total” válido del ticket
+  for (let i=lines.length-1; i>=0; i--){
+    const l = lines[i];
+    if (/\btotal\b/i.test(l) && !/impt|imp\.?t|iva|sub/i.test(l)) {
+      const m = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
+      if (m && m.length){
+        const last = parsePriceMX(m[m.length-1]);
+        if (last!=null) return last;
+      }
+    }
+  }
+  // 3) Último recurso: mayor importe del documento
+  const nums = [];
+  lines.forEach(l=>{
+    const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
+    if(mm) mm.forEach(v=>{ const p = parsePriceMX(v); if(p!=null) nums.push(p); });
+  });
+  if (nums.length) return Math.max(...nums);
+  return null;
+}
+
 /* ---------- Parseo principal (número, fecha, total, productos) ---------- */
 function parseTicketText(text){
   const lines = splitLinesForReceipt(text);
   const all   = lines.join('\n');
 
-  // Número de ticket (robusto)
-  let numero = extractTicketNumber(lines, all);
+  // Número de ticket (flecha roja)
+  const numero = extractTicketNumber(lines, all);
 
-  // Fecha -> YYYY-MM-DD
+  // Fecha (flecha azul) -> YYYY-MM-DD
   let fechaISO = null;
   const dm = all.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
   if (dm){
@@ -203,28 +240,10 @@ function parseTicketText(text){
     fechaISO = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
   }
 
-  // Total
-  let total = null;
-  for (let i=0;i<lines.length;i++){
-    const l = lines[i];
-    if (/total/i.test(l)){
-      const m = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if (m && m.length){
-        const last = parsePriceMX(m[m.length-1]);
-        if (last!=null) total = last;
-      }
-    }
-  }
-  if (total == null){
-    const nums = [];
-    lines.forEach(l=>{
-      const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if(mm) mm.forEach(v=>{ const p = parsePriceMX(v); if(p!=null) nums.push(p); });
-    });
-    if (nums.length) total = Math.max(...nums);
-  }
+  // Total pagado (flecha amarilla)
+  const total = detectGrandTotal(lines);
 
-  // Items
+  // Productos (flechas verdes)
   const productosDetectados = parseItemsFromLines(lines).filter(p => p.price > 0);
 
   return {
@@ -275,7 +294,7 @@ async function leerTicket(){
     const text = await recognizeImageToText(file);
     const { numero, fecha, total, productosDetectados } = parseTicketText(text);
 
-    // Rellena inputs básicos
+    // Rellena inputs
     const iNum   = document.getElementById('inputTicketNumero');
     const iFecha = document.getElementById('inputTicketFecha');
     const iTotal = document.getElementById('inputTicketTotal');
@@ -283,7 +302,7 @@ async function leerTicket(){
     if (iFecha && fecha)  iFecha.value = fecha;
     if (iTotal && total)  iTotal.value = parseFloat(total).toFixed(2);
 
-    // Publica productos para registrar.js
+    // Emite productos para registrar.js (UI bloqueada)
     window.__ocrProductos = productosDetectados || [];
     document.dispatchEvent(new CustomEvent('ocr:productos', { detail: window.__ocrProductos }));
 
