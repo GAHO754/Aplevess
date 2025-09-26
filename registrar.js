@@ -1,11 +1,10 @@
-// registrar.js — RTDB + Cámara + OCR + SOLO-LECTURA tras escaneo (puntos auto 1–15)
+// registrar.js — RTDB + Cámara + OCR + UI BLOQUEADA (puntos auto 1–15)
 (() => {
   const $ = id => document.getElementById(id);
 
   // ===== Firebase =====
   const auth = firebase.auth();
   const db   = firebase.database();
-  console.log("Proyecto (registrar):", firebase.app().options.projectId);
 
   // ===== UI =====
   const fileInput    = $('ticketFile');
@@ -18,136 +17,90 @@
   const video        = $('cameraVideo');
   const btnShot      = $('btnCapturar');
 
-  const btnOCR       = $('btnProcesarTicket'); // (el OCR real vive en ocr.js -> leerTicket)
+  const btnOCR       = $('btnProcesarTicket'); // el procesamiento real está en ocr.js
   const ocrStatus    = $('ocrStatus');
 
-  const iNum         = $('inputTicketNumero');
-  const iFecha       = $('inputTicketFecha');
-  const iTotal       = $('inputTicketTotal');
+  const iNum   = $('inputTicketNumero');
+  const iFecha = $('inputTicketFecha');
+  const iTotal = $('inputTicketTotal');
 
   const listaProd    = $('listaProductos');
-  const nuevoProd    = $('nuevoProducto');
-  const nuevaCant    = $('nuevaCantidad');
-  const btnAdd       = $('btnAgregarProducto');
 
   const btnRegistrar = $('btnRegistrarTicket');
   const msgTicket    = $('ticketValidacion');
   const greetEl      = $('userGreeting');
 
-  const tablaPuntos  = $('tablaPuntos');
-  const tablaPuntosBody = tablaPuntos?.querySelector('tbody');
+  const tablaPuntosBody = ($('tablaPuntos')||{}).querySelector?.('tbody');
   const totalPuntosEl   = $('totalPuntos');
 
-  // ===== Config =====
-  const VENCE_DIAS = 180;  // vence en 180 días
-  const DAY_LIMIT  = 2;    // máx. tickets por día
+  // ===== Políticas =====
+  const VENCE_DIAS = 180; // meses aprox.
+  const DAY_LIMIT  = 2;   // máx. tickets por día
 
   // ===== Estado =====
   let isLogged = false;
   let liveStream = null;
   let currentPreviewURL = null;
-
   // productos = [{ name, qty, price, pointsUnit }]
   let productos = [];
 
-  // Bloqueo después de OCR
-  let ocrLocked = false;
-
-  // ===========================================
-  //  Heurística categorías + puntos (1–15)
-  // ===========================================
+  // ===== Asignación de puntos 1–15 según categoría (ligera) =====
   const KW = {
-    entradas: ["entrada","sampler","appetizer","nachos","totopos","guacamole","spinach & artichoke","artichoke dip","mozzarella sticks","aros de cebolla","onion rings","elote","elotes","chicharron","chicharrón","chips","dip","wonton","queso fundido"],
-    alitas: ["alitas","wings","boneless","buffalo wings","bone in","bone-out","bone out","boneless buffalo"],
-    ensaladas: ["ensalada","salad","garden salad","caesar","oriental chicken salad","buffalo salad","santa fe salad"],
-    sopas: ["sopa","soup","chicken tortilla","sopa de tortilla","caldo","crema"],
-    burgers: ["burger","hamburguesa","cheese burger","cheeseburger","bacon","messy burger","cowboy burger","smash burger","double smash","bacon & cheddar","cheesy nacho","buffalo chicken burger","louisiana chicken burger","sizzling burger"],
-    pastas: ["pasta","fettuccine","alfredo","pomodoro","three cheese","parmesana","parmigiana","chicken & broccoli","chicken parm","camarones blackened","shrimp pasta","lasagna","lasaña"],
-    costillas: ["costillas","ribs","riblets","double glazed ribs","old texas sampler","ribs platter","carnitas ribs"],
-    pollo: ["pollo","chicken","tenders","chicken tender","bourbon street chicken","fiesta lime chicken","crispy orange chicken","stuffed chicken"],
-    pescado: ["pescado","salmon","salmón","grilled salmon","tilapia","camarones","shrimp","fish & chips","fish and chips"],
-    cortes: ["steak","arrachera","house steak","bourbon street steak","sirloin","rib eye","ribeye","new york","ny steak","shrimp & parmesan steak"],
-    texmex: ["fajitas","faji-tsss","fajita","tacos","quesadillas","enchiladas","burrito","burritos","skillet","adobado","al pastor","asada","barbacoa","chile"],
-    sides: ["papas","fries","french fries","pure","puré","puré de papa","mashed potato","arroz","frijoles","coleslaw","ensalada chica","side","guarnicion","guarnición","elote","maiz","maíz"],
-    postres: ["postre","dessert","brownie","fudge","sundae","helado","nieve","pastel","cheesecake","apple cheesecake","apple chimicheesecake","blondie","triple chocolate meltdown","churro","pay","pie"],
-    bebidas: ["refresco","soda","coca","pepsi","sprite","fanta","manzanita","bebida","limonada","limon","limón","lemonade","agua","jugo","naranja","arándano","cranberry","smoothie","malteada","shake","iced tea","te helado","té helado"],
-    calientes: ["cafe","café","capuchino","capuccino","latte","espresso","te","té","chocolate caliente"],
-    alcohol: ["cerveza","beer","vino","tinto","blanco","rosado","rosé","mezcal","tequila","whisky","ron","vodka","gin"],
-    cocteles: ["margarita","perfect margarita","mojito","paloma","cantarito","martini","piña colada","pina colada","azulito","bucket","cuba","daiquiri","spritz","aperol","gin tonic","tonic"]
+    burgers:["burger","hamburguesa","cheeseburger","bacon"],
+    costillas:["ribs","costillas"],
+    cortes:["steak","sirloin","ribeye","rib eye","new york","arrachera"],
+    pescado:["salmon","salmón","tilapia","pescado","shrimp","camarones","fish & chips","fish and chips"],
+    pollo:["pollo","chicken","tenders"],
+    pastas:["pasta","alfredo","fettuccine","parm","pomodoro","lasagna","lasaña"],
+    texmex:["fajita","fajitas","tacos","quesadilla","enchilada","burrito","skillet"],
+    alitas:["alitas","wings","boneless"],
+    entradas:["entrada","sampler","mozzarella","nachos","chips","dip","onion rings","aros de cebolla"],
+    ensaladas:["ensalada","salad"],
+    sopas:["sopa","soup"],
+    postres:["postre","dessert","brownie","cheesecake","blondie","helado","nieve","pie","pastel"],
+    cocteles:["margarita","mojito","martini","paloma","piña colada","pina colada","gin tonic","aperol","spritz"],
+    alcohol:["cerveza","beer","vino","mezcal","tequila","whisky","ron","vodka","gin"],
+    bebidas:["refresco","soda","coca","pepsi","sprite","fanta","limonada","agua","jugo","iced tea","malteada","shake","smoothie"],
+    calientes:["cafe","café","latte","espresso","té","te","chocolate"]
   };
-
   const POINT_RANGES = {
-    burgers: [7, 15], costillas: [7, 15], cortes: [7, 15],
-    pescado: [6, 14], pollo: [6, 13], pastas: [6, 13], texmex: [6, 14],
-    alitas: [4, 10], entradas: [3, 9], ensaladas: [3, 9], sopas: [3, 8], sides: [2, 6],
-    postres: [4, 10], cocteles: [4, 10], alcohol: [3, 9], bebidas: [2, 7], calientes: [2, 6],
-    other: [1, 5]
+    burgers:[7,15], costillas:[7,15], cortes:[7,15], pescado:[6,14], pollo:[6,13], pastas:[6,13], texmex:[6,14],
+    alitas:[4,10], entradas:[3,9], ensaladas:[3,9], sopas:[3,8], postres:[4,10], cocteles:[4,10],
+    alcohol:[3,9], bebidas:[2,7], calientes:[2,6], other:[1,5]
   };
-
-  function hashInt(str){
-    let h = 2166136261 >>> 0; // FNV-1a
-    for (let i=0; i<str.length; i++){
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 16777619);
+  const hashInt = (s)=>{ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; };
+  const seededRandInt = (seed,min,max)=>{ const r=(hashInt(String(seed))%10000)/10000; return Math.floor(min + r*(max-min+1)); };
+  function detectCategory(name){
+    const n = String(name||'').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+    for(const k of ["burgers","costillas","cortes","pescado","pollo","pastas","texmex","alitas","entradas","ensaladas","sopas","postres","cocteles","alcohol","bebidas","calientes"]){
+      if (KW[k].some(w=>n.includes(w))) return k;
     }
-    return h >>> 0;
-  }
-  function seededRandInt(seed, min, max){
-    const x = hashInt(String(seed));
-    const r = (x % 10000) / 10000; // 0..1
-    return Math.floor(min + r * (max - min + 1));
-  }
-  function detectCategory(name) {
-    const n = String(name || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-    if (KW.burgers.some(k => n.includes(k)))   return "burgers";
-    if (KW.costillas.some(k => n.includes(k))) return "costillas";
-    if (KW.cortes.some(k => n.includes(k)))    return "cortes";
-    if (KW.pescado.some(k => n.includes(k)))   return "pescado";
-    if (KW.pollo.some(k => n.includes(k)))     return "pollo";
-    if (KW.pastas.some(k => n.includes(k)))    return "pastas";
-    if (KW.texmex.some(k => n.includes(k)))    return "texmex";
-    if (KW.alitas.some(k => n.includes(k)))    return "alitas";
-    if (KW.entradas.some(k => n.includes(k)))  return "entradas";
-    if (KW.ensaladas.some(k => n.includes(k))) return "ensaladas";
-    if (KW.sopas.some(k => n.includes(k)))     return "sopas";
-    if (KW.postres.some(k => n.includes(k)))   return "postres";
-    if (KW.cocteles.some(k => n.includes(k)))  return "cocteles";
-    if (KW.alcohol.some(k => n.includes(k)))   return "alcohol";
-    if (KW.bebidas.some(k => n.includes(k)))   return "bebidas";
-    if (KW.calientes.some(k => n.includes(k))) return "calientes";
-    if (KW.sides.some(k => n.includes(k)))     return "sides";
     return "other";
   }
   function assignPointsForProduct(name, price){
     let cat = detectCategory(name);
-    let [minP, maxP] = POINT_RANGES[cat] || POINT_RANGES.other;
-    if (cat === "other" && typeof price === "number") {
-      if (price >= 250) [minP, maxP] = [10, 15];
-      else if (price >= 120) [minP, maxP] = [5, 9];
-      else [minP, maxP] = [1, 5];
+    let [minP,maxP] = POINT_RANGES[cat] || POINT_RANGES.other;
+    if (cat==="other" && typeof price==="number"){
+      if (price>=250) [minP,maxP]=[10,15];
+      else if (price>=120) [minP,maxP]=[5,9];
+      else [minP,maxP]=[1,5];
     }
     const seed = `${name}|${Math.round(price||0)}`;
-    return seededRandInt(seed, minP, maxP);
+    return seededRandInt(seed,minP,maxP);
   }
 
-  // ===== Helpers UI =====
+  // ===== Helpers =====
   function setStatus(msg, type='') {
     if (!ocrStatus) return;
     ocrStatus.className = 'validacion-msg';
     if (type) ocrStatus.classList.add(type); // ok | err
     ocrStatus.textContent = msg || '';
   }
-  function disableInput(el, hide=false){
-    if (!el) return;
-    el.setAttribute('disabled','disabled');
-    el.setAttribute('readonly','readonly');
-    if (hide) el.style.display = 'none';
-  }
-  function disableButton(el, hide=false){
-    if (!el) return;
-    el.setAttribute('disabled','disabled');
-    el.classList.add('is-disabled');
-    if (hide) el.style.display = 'none';
+  function disableAllEdits() {
+    // NUNCA habilitamos estos inputs (se quedan como “solo lectura”)
+    [iNum,iFecha,iTotal].forEach(x=>{ if(x){ x.readOnly = true; x.disabled = true; }});
+    // Sin controles para agregar/quitar productos
+    // (la lista se muestra solo como chips sin botones)
   }
   function setPreview(file) {
     if (currentPreviewURL) URL.revokeObjectURL(currentPreviewURL);
@@ -179,9 +132,7 @@
     setPreview(file);
   }
 
-  // ======================
-  // Cámara (OpenCV)
-  // ======================
+  // ===== Cámara (OpenCV endereza) =====
   async function openCamera() {
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -197,10 +148,7 @@
         { video: true, audio:false }
       ];
       let stream = null, lastErr = null;
-      for (const c of tries) {
-        try { stream = await navigator.mediaDevices.getUserMedia(c); break; }
-        catch(e){ lastErr = e; }
-      }
+      for (const c of tries) { try { stream = await navigator.mediaDevices.getUserMedia(c); break; } catch(e){ lastErr = e; } }
       if (!stream) throw lastErr || new Error("No se pudo abrir la cámara");
 
       liveStream = stream;
@@ -245,9 +193,8 @@
     const blob = dataURLtoBlob(dataURL);
     setFileInputFromBlob(blob, `ticket_${Date.now()}.jpg`);
 
-    // No bloqueamos aquí: el bloqueo ocurre tras OCR exitoso.
     setStatus("Foto capturada. Procesa con OCR…", "ok");
-    btnOCR?.click();
+    btnOCR?.click(); // dispara el flujo de OCR (ocr.js)
   }
   function processWithOpenCV(canvasEl) {
     const cv = window.cv;
@@ -259,7 +206,6 @@
     let contours = new cv.MatVector();
     let hierarchy = new cv.Mat();
     let best = null;
-
     try {
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
       cv.GaussianBlur(gray, blurred, new cv.Size(5,5), 0,0, cv.BORDER_DEFAULT);
@@ -322,24 +268,20 @@
     }
   }
 
-  // ======================
-  // Productos (solo lectura)
-  // ======================
+  // ===== Productos (solo lectura en UI) =====
   function upsertProducto(nombre, cantidad=1, price=null) {
     nombre = String(nombre||'').trim();
     if (!nombre) return;
-
-    const pts = assignPointsForProduct(nombre, typeof price === 'number' ? price : null);
+    const pointsUnit = assignPointsForProduct(nombre, typeof price==='number' ? price : null);
 
     const idx = productos.findIndex(p => p.name.toLowerCase() === nombre.toLowerCase());
     if (idx >= 0) {
       productos[idx].qty += cantidad;
       if (typeof price === 'number') {
-        const prevPrice = Number(productos[idx].price || 0);
-        productos[idx].price = +(prevPrice + price).toFixed(2);
+        productos[idx].price = +((productos[idx].price||0) + price).toFixed(2);
       }
     } else {
-      productos.push({ name: nombre, qty: cantidad, price: price ?? null, pointsUnit: pts });
+      productos.push({ name: nombre, qty: cantidad, price: price ?? null, pointsUnit });
     }
     renderProductos();
   }
@@ -349,26 +291,12 @@
     listaProd.innerHTML = '';
     productos.forEach(p => {
       const chip = document.createElement('div');
-      chip.className = 'chip';
-      // En modo bloqueado NO mostramos botones de edición
-      if (ocrLocked) {
-        chip.innerHTML = `
-          <span>${p.name}</span>
-          <span class="qty"><strong>${p.qty}</strong></span>
-          <span class="pts">${p.pointsUnit} pts/u</span>
-        `;
-      } else {
-        chip.innerHTML = `
-          <span>${p.name}</span>
-          <span class="qty">
-            <button type="button" data-act="-" data-name="${p.name}">−</button>
-            <strong>${p.qty}</strong>
-            <button type="button" data-act="+" data-name="${p.name}">+</button>
-          </span>
-          <span class="pts">${p.pointsUnit} pts/u</span>
-          <button type="button" data-act="x" data-name="${p.name}">✕</button>
-        `;
-      }
+      chip.className = 'chip readonly';
+      chip.innerHTML = `
+        <span>${p.name}</span>
+        <span class="qty"><strong>${p.qty}</strong></span>
+        <span class="pts">${p.pointsUnit} pts/u</span>
+      `;
       listaProd.appendChild(chip);
     });
     updatePuntosResumen();
@@ -398,16 +326,14 @@
     return { total, detalle };
   }
 
-  // ======================
-  // Guardar en RTDB (con índice anti-duplicado)
-  // ======================
+  // ===== Guardar en RTDB con índice (fecha+folio) anti-duplicado =====
   function addMonths(date, months){ const d=new Date(date.getTime()); d.setMonth(d.getMonth()+months); return d; }
   function startEndOfToday() {
     const s = new Date(); s.setHours(0,0,0,0);
     const e = new Date(); e.setHours(23,59,59,999);
     return { start: s.getTime(), end: e.getTime() };
   }
-  function ymdFromISO(iso){ return iso.replaceAll('-',''); } // 'YYYY-MM-DD' -> 'YYYYMMDD'
+  function ymdFromISO(iso){ return String(iso||'').replace(/-/g,''); }
 
   async function registrarTicketRTDB() {
     const user = auth.currentUser;
@@ -427,20 +353,14 @@
       return;
     }
 
-    if (!ocrLocked) {
-      msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "Primero escanea el ticket. (Se bloquea edición automáticamente).";
-      return;
-    }
-
     const { total: puntosTotal, detalle } = getPuntosDetalle();
     if (puntosTotal <= 0) {
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "No se detectaron consumos con puntos. Revisa la foto del ticket.";
+      msgTicket.textContent = "No se detectaron consumos con puntos.";
       return;
     }
 
-    // Límite por día (usuario)
+    // límite por día
     if (DAY_LIMIT > 0) {
       try {
         const { start, end } = startEndOfToday();
@@ -452,60 +372,52 @@
           msgTicket.textContent = `⚠️ Ya registraste ${DAY_LIMIT} tickets hoy.`;
           return;
         }
-      } catch (err) {
-        console.warn('No pude verificar límite diario, continúo sin bloquear:', err);
-      }
+      } catch (err) { console.warn('No pude verificar límite diario:', err); }
     }
-
-    // Índice global: /ticketsIndex/YYYYMMDD/FOLIO  (reglas: !data.exists())
-    const ymd = ymdFromISO(fechaStr);
-    const indexRef  = db.ref(`ticketsIndex/${ymd}/${folio}`);
-    const userRef   = db.ref(`users/${user.uid}`);
-    const ticketKey = `${ymd}_${folio}`;
-    const ticketRef = userRef.child(`tickets/${ticketKey}`);
-    const pointsRef = userRef.child('points');
 
     const fecha = new Date(`${fechaStr}T00:00:00`);
     const vencePuntos = addMonths(fecha, VENCE_DIAS/30);
 
+    const userRef   = db.ref(`users/${user.uid}`);
+    const ticketRef = userRef.child(`tickets/${folio}`);
+    const pointsRef = userRef.child('points');
+
+    // Índice global fecha+folio para **evitar duplicados** (mismo ticket, misma fecha)
+    const ymd = ymdFromISO(fechaStr);
+    const indexRef = db.ref(`ticketsIndex/${ymd}/${folio}`);
+
     try {
-      // 1) Intenta crear índice global (si existe, aborta)
+      // 1) Crea índice si NO existe (reglas .write: !data.exists())
       const idxTx = await indexRef.transaction(curr => {
         if (curr) return; // ya existe → aborta
         return { uid: user.uid, createdAt: Date.now() };
       });
       if (!idxTx.committed) {
         msgTicket.className='validacion-msg err';
-        msgTicket.textContent = "❌ Ticket duplicado (mismo número y fecha).";
+        msgTicket.textContent = "❌ Este folio ya fue registrado para esa fecha.";
         return;
       }
 
-      // 2) Crea ticket del usuario (no sobrescribir)
+      // 2) Crea ticket del usuario (anti-sobrescritura)
       const res = await ticketRef.transaction(current => {
-        if (current) return; // ya existe → aborta
+        if (current) return;
         return {
           folio,
           fecha: fechaStr,
           total: totalNum,
-          productos: productos.map(p=>({
-            nombre: p.name,
-            cantidad: p.qty,
-            precioLinea: p.price ?? null,
-            puntos_unitarios: p.pointsUnit
-          })),
+          productos: productos.map(p=>({ nombre: p.name, cantidad: p.qty, precioLinea: p.price ?? null, puntos_unitarios: p.pointsUnit })),
           puntos: { total: puntosTotal, detalle },
           vencePuntos: vencePuntos.getTime(),
           createdAt: Date.now()
         };
       });
-
       if (!res.committed) {
         msgTicket.className='validacion-msg err';
-        msgTicket.textContent = "❌ Este ticket ya fue registrado en tu cuenta.";
+        msgTicket.textContent = "❌ Este ticket ya está en tu cuenta.";
         return;
       }
 
-      // 3) Sumar puntos
+      // 3) Suma puntos
       await pointsRef.transaction(curr => (Number(curr)||0) + puntosTotal);
 
       msgTicket.className='validacion-msg ok';
@@ -515,53 +427,14 @@
       console.error(e);
       msgTicket.className='validacion-msg err';
       if (String(e).includes('Permission denied')) {
-        msgTicket.textContent = "Permiso denegado por Realtime Database (revisa reglas /ticketsIndex y /users/$uid/tickets).";
+        msgTicket.textContent = "Permiso denegado por Realtime Database. Revisa las reglas.";
       } else {
         msgTicket.textContent = "No se pudo registrar el ticket. Revisa tu conexión e inténtalo de nuevo.";
       }
     }
   }
 
-  // ======================
-  // Bloqueo de UI tras OCR
-  // ======================
-  function lockUIAfterOCR() {
-    ocrLocked = true;
-
-    // Bloquear inputs básicos
-    disableInput(iNum);
-    disableInput(iFecha);
-    disableInput(iTotal);
-
-    // Ocultar controles de edición de productos
-    disableInput(nuevoProd, true);
-    disableInput(nuevaCant, true);
-    disableButton(btnAdd, true);
-
-    // Desactivar OCR y fuentes de imagen
-    disableButton(btnOCR);
-    disableButton(btnPickFile);
-    disableButton(btnCam);
-
-    // Desactivar dropzone y file input
-    if (dropzone) dropzone.style.pointerEvents = 'none';
-    if (fileInput) {
-      fileInput.setAttribute('disabled','disabled');
-      fileInput.value = '';
-    }
-
-    // Re-render para quitar botones (+/−/✕)
-    renderProductos();
-
-    setStatus("✓ Datos bloqueados por seguridad (basados en tu ticket).", "ok");
-
-    // Habilita solo el botón Registrar si está autenticado
-    if (btnRegistrar && isLogged) btnRegistrar.disabled = false;
-  }
-
-  // ======================
-  // Sesión
-  // ======================
+  // ===== Sesión =====
   auth.onAuthStateChanged(user => {
     isLogged = !!user;
     if (!user) {
@@ -569,76 +442,35 @@
       if (btnRegistrar) btnRegistrar.disabled = true;
     } else {
       if (greetEl) greetEl.textContent = `Registro de ticket — ${user.email}`;
-      // Si ya está bloqueado por OCR, permite registrar
-      if (btnRegistrar && ocrLocked) btnRegistrar.disabled = false;
+      if (btnRegistrar) btnRegistrar.disabled = false;
     }
   });
 
-  // ======================
-  // Eventos
-  // ======================
+  // ===== Eventos =====
   btnPickFile?.addEventListener('click', ()=> fileInput?.click());
   btnCam?.addEventListener('click', openCamera);
-  btnClose?.addEventListener('click', ()=> { stopCamera(); });
-  btnShot?.addEventListener('click', captureFrame);
+  btnClose?.addEventListener('click', ()=>{ stopCamera(); });
+
+  $('btnCapturar')?.addEventListener('click', captureFrame);
 
   fileInput?.addEventListener('change', (e)=>{
     const f = e.target.files && e.target.files[0];
-    if (f) { setPreview(f); setStatus("Imagen cargada. Ahora pulsa: Procesar ticket (OCR).", "ok"); }
+    if (f) { setPreview(f); setStatus("Imagen cargada. Procesa con OCR.", "ok"); }
   });
 
-  btnOCR?.addEventListener('click', ()=>{
-    if (ocrLocked) return; // ya está bloqueado
-    if (!fileInput?.files?.length && !dropzone?.querySelector('img.preview')) {
-      setStatus("Adjunta imagen del ticket primero.", "err");
-      return;
-    }
-    // El OCR se maneja en ocr.js -> leerTicket()
-  });
-
-  // ⚠️ Importante: NO registramos handlers para sumar/restar/eliminar productos cuando está bloqueado
-  // pero por si quedó algo renderizado antes del lock, invalidamos acciones si ocrLocked = true
-  listaProd?.addEventListener('click', (e)=>{
-    if (ocrLocked) return; // no permitir ediciones
-    const btn = e.target.closest('button');
-    if (!btn) return;
-    const act = btn.dataset.act, name = btn.dataset.name;
-    const idx = productos.findIndex(p=>p.name===name);
-    if (idx<0) return;
-    if (act==='+') productos[idx].qty++;
-    if (act==='-' && productos[idx].qty>1) productos[idx].qty--;
-    if (act==='x') productos.splice(idx,1);
-    renderProductos();
-  });
-
-  btnAdd?.addEventListener('click', ()=>{
-    if (ocrLocked) return; // no permitir ediciones
-    const n = (nuevoProd.value || '').trim();
-    const c = Math.max(1, parseInt(nuevaCant.value||"1", 10));
-    if (n) upsertProducto(n, c, null);
-    nuevoProd.value=''; nuevaCant.value='';
-  });
-
-  // === Integra productos detectados por ocr.js ===
+  // Integración con ocr.js
   document.addEventListener('ocr:productos', (ev) => {
     const det = ev.detail || []; // [{name, qty, price}]
     productos = [];
-    if (Array.isArray(det)) {
-      det.forEach(p => upsertProducto(p.name, p.qty || 1, typeof p.price==='number' ? p.price : null));
-    }
-    // una vez poblado por OCR → BLOQUEAR
-    lockUIAfterOCR();
+    if (Array.isArray(det)) det.forEach(p => upsertProducto(p.name, p.qty || 1, typeof p.price==='number' ? p.price : null));
   });
 
   btnRegistrar?.addEventListener('click', registrarTicketRTDB);
 
   // ===== Init =====
-  // Desde el inicio deshabilitamos inputs manuales; se activarán solo para mostrar (no editar) tras OCR
-  [iNum, iFecha, iTotal, nuevoProd, nuevaCant, btnAdd, btnRegistrar].forEach(el=>{
-    if (!el) return;
-    el.setAttribute('disabled','disabled');
-    if (el === btnRegistrar) el.disabled = true;
-  });
+  disableAllEdits(); // bloquea inputs
+  // tabla vacía
+  if (tablaPuntosBody) tablaPuntosBody.innerHTML = '';
   if ((!window.isSecureContext && location.hostname !== 'localhost') ||
       (location.protocol !== 'https:' && location.hostname !== 'localhost')) {
     setStatus("Para usar la cámara en móviles, abre el sitio con HTTPS.", "err");
