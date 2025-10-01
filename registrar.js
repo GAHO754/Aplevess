@@ -17,7 +17,7 @@
   const video        = $('cameraVideo');
   const btnShot      = $('btnCapturar');
 
-  const btnOCR       = $('btnProcesarTicket'); // el procesamiento real está en ocr.js
+  const btnOCR       = $('btnProcesarTicket'); // el OCR real vive en ocr.js
   const ocrStatus    = $('ocrStatus');
 
   const iNum   = $('inputTicketNumero');
@@ -97,10 +97,8 @@
     ocrStatus.textContent = msg || '';
   }
   function disableAllEdits() {
-    // NUNCA habilitamos estos inputs (se quedan como “solo lectura”)
+    // inputs solo lectura/bloqueados (UI fija por foto)
     [iNum,iFecha,iTotal].forEach(x=>{ if(x){ x.readOnly = true; x.disabled = true; }});
-    // Sin controles para agregar/quitar productos
-    // (la lista se muestra solo como chips sin botones)
   }
   function setPreview(file) {
     if (currentPreviewURL) URL.revokeObjectURL(currentPreviewURL);
@@ -450,26 +448,26 @@
   btnPickFile?.addEventListener('click', ()=> fileInput?.click());
   btnCam?.addEventListener('click', openCamera);
   btnClose?.addEventListener('click', ()=>{ stopCamera(); });
-
-  $('btnCapturar')?.addEventListener('click', captureFrame);
+  btnShot?.addEventListener('click', captureFrame);
 
   fileInput?.addEventListener('change', (e)=>{
     const f = e.target.files && e.target.files[0];
     if (f) { setPreview(f); setStatus("Imagen cargada. Procesa con OCR.", "ok"); }
   });
 
-  // Integración con ocr.js
+  // Integración con ocr.js: carga de productos detectados
   document.addEventListener('ocr:productos', (ev) => {
     const det = ev.detail || []; // [{name, qty, price}]
     productos = [];
-    if (Array.isArray(det)) det.forEach(p => upsertProducto(p.name, p.qty || 1, typeof p.price==='number' ? p.price : null));
+    if (Array.isArray(det)) det.forEach(p => upsertProducto(
+      p.name, p.qty || 1, typeof p.price==='number' ? p.price : null
+    ));
   });
 
   btnRegistrar?.addEventListener('click', registrarTicketRTDB);
 
   // ===== Init =====
   disableAllEdits(); // bloquea inputs
-  // tabla vacía
   if (tablaPuntosBody) tablaPuntosBody.innerHTML = '';
   if ((!window.isSecureContext && location.hostname !== 'localhost') ||
       (location.protocol !== 'https:' && location.hostname !== 'localhost')) {
