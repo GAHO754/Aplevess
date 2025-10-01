@@ -18,12 +18,14 @@ function parsePriceMX(raw){
   if(!raw) return null;
   let s = String(raw).replace(/[^\d.,]/g,'').trim();
   if(!s) return null;
+
+  // dual separator
   if(s.includes(',') && s.includes('.')){
-    if (s.lastIndexOf('.') > s.lastIndexOf(',')) s = s.replace(/,/g,'');
-    else s = s.replace(/\./g,'').replace(',', '.');
+    if (s.lastIndexOf('.') > s.lastIndexOf(',')) s = s.replace(/,/g,''); // 1,234.56 -> 1234.56
+    else s = s.replace(/\./g,'').replace(',', '.'); // 1.234,56 -> 1234.56
   } else if (s.includes(',')){
     const m = s.match(/,\d{2}$/);
-    s = m ? s.replace(',', '.') : s.replace(/,/g,'');
+    s = m ? s.replace(',', '.') : s.replace(/,/g,''); // 123,45 -> 123.45 | 1,234 -> 1234
   }
   const n = parseFloat(s);
   return Number.isFinite(n) ? +(n.toFixed(2)) : null;
@@ -105,7 +107,7 @@ function extractTicketNumber(lines, allText) {
         nearWords.forEach(w => { if (low.includes(' ' + w + ' ')) score += 2; });
         if (dateTok && line.includes(dateTok.raw)) score += 2;
         if (timeTok && line.includes(timeTok.raw)) score += 2;
-        if (i <= 12) score += 1; // suele ir en la parte alta
+        if (i <= 12) score += 1; // suele ir arriba
 
         candidates.push({ tok, score });
       }
@@ -185,7 +187,7 @@ function parseItemsFromLines(lines){
 
 /* ---------- TOTAL pagado (incluyendo propina) ---------- */
 function detectGrandTotal(lines){
-  // 1) Busca “Propina” y toma el último “Total” después de eso
+  // 1) Busca “Propina/Servicio” y toma el último “Total” después de eso
   let propIndex = -1;
   for (let i=0;i<lines.length;i++){
     if (/propina|servicio|service/i.test(lines[i])) propIndex = i;
@@ -202,7 +204,7 @@ function detectGrandTotal(lines){
       }
     }
   }
-  // 2) Si no hubo propina, toma el ÚLTIMO “Total” válido del ticket
+  // 2) Sin propina: toma el ÚLTIMO “Total” válido
   for (let i=lines.length-1; i>=0; i--){
     const l = lines[i];
     if (/\btotal\b/i.test(l) && !/impt|imp\.?t|iva|sub/i.test(l)) {
@@ -213,7 +215,7 @@ function detectGrandTotal(lines){
       }
     }
   }
-  // 3) Último recurso: mayor importe del documento
+  // 3) Último recurso: mayor importe del ticket
   const nums = [];
   lines.forEach(l=>{
     const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
@@ -313,7 +315,7 @@ async function leerTicket(){
   } catch(e){
     console.error(e);
     if (statusEl){
-      statusEl.textContent = "❌ No pude leer el ticket. Intenta de nuevo con mejor iluminación.";
+      statusEl.textContent = "❌ No se pudo leer el ticket. Intenta con mejor iluminación y encuadre.";
       statusEl.classList?.remove('loading-dots');
     }
     alert("No se pudo leer el ticket. Prueba con más luz y encuadre recto.");
