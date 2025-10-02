@@ -11,7 +11,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-  <!-- Tu archivo con firebase.initializeApp(firebaseConfig) -->
   <script src="firebase-config.js"></script>
 
   <style>
@@ -26,23 +25,12 @@
     .ok { color:#9be49b; }
     .warn { color:#ffdfaa; }
     .err { color:#ff9a9a; }
-
-    /* Botón rojo Salir en header */
     .right-section .btn-logout { margin-left: 8px; padding: 10px 16px; }
-
-    /* ==== Sección de video ==== */
     .video-card { margin-top: 22px; background: rgba(25,25,25,.7); border:1px solid rgba(255,255,255,.08); border-radius:16px; padding:16px; }
     .video-card h3 { margin-bottom: 10px; color:#ffd4d4; }
     .video-wrap { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 12px; overflow: hidden; border:1px solid rgba(255,255,255,.08); }
     .video-wrap video, .video-wrap iframe { width: 100%; height: 100%; display: block; object-fit: cover; background: #000; }
-
-    .redeem-wrap{
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      margin: 16px 0 24px;
-    }
-
+    .redeem-wrap{ display: flex; justify-content: center; align-items: center; margin: 16px 0 24px; }
     a { text-decoration: none; }
     a:hover { text-decoration: none; }
   </style>
@@ -98,7 +86,6 @@
       <a class="btn-cta btn-redeem" href="canjear.html">Canjear puntos</a>
     </div>
 
-    <!-- ===== Video promocional / tutorial ===== -->
     <section class="video-card hero">
       <h3>Promociones para ti</h3>
       <div class="video-wrap banner-349">
@@ -113,25 +100,15 @@
     // ====== RTDB ======
     const auth = firebase.auth();
     const db   = firebase.database();
-
     const $ = (id)=>document.getElementById(id);
     const tbody = document.querySelector('#tablaTickets tbody');
-
-    // Config vencimiento de puntos (en días)
     const VENCE_EN_DIAS = 180;
 
-    // Salir
     document.getElementById('btnLogout').addEventListener('click', async () => {
-      try {
-        await auth.signOut();
-        location.href = 'index.html';
-      } catch (e) {
-        console.error('Error al cerrar sesión:', e);
-        alert('No se pudo cerrar sesión. Intenta de nuevo.');
-      }
+      try { await auth.signOut(); location.href = 'index.html'; }
+      catch (e) { console.error('Error al cerrar sesión:', e); alert('No se pudo cerrar sesión.'); }
     });
 
-    // Helpers de fechas (RTDB guarda millis)
     function fmtDate(millis) {
       if (!millis) return '';
       const d = new Date(millis);
@@ -142,9 +119,8 @@
       return Math.ceil((millis - Date.now()) / 86400000);
     }
 
-    // Estado global
-    let _tickets = [];         // array de tickets normalizados
-    let _redemptions = [];     // array de canjes normalizados
+    let _tickets = [];
+    let _redemptions = [];
 
     function renderTableAndTicketStats() {
       let totalTickets=0, visitas=0, ptsActivosTickets=0, ptsVencidos=0, proximos=[];
@@ -166,7 +142,7 @@
         return `
           <tr>
             <td>${t.numero || t.folio || ''}</td>
-            <td>${fmtDate(t.createdAt)}</td>
+            <td>${t.fecha ? t.fecha.split('-').reverse().join('/') : fmtDate(t.createdAt)}</td>
             <td>$${Number(t.total||0).toFixed(2)}</td>
             <td>${pts}</td>
             <td>${fmtDate(t.vencePuntos)}</td>
@@ -182,15 +158,14 @@
 
       window.__ptsActivosTickets = ptsActivosTickets;
       window.__proximos = proximos;
-
       updateHeaderStats();
     }
 
     function updateHeaderStats() {
       const ptsActivosTickets = window.__ptsActivosTickets || 0;
       const proximos = window.__proximos || [];
-
       const now = Date.now();
+
       const spentByRedeemed = _redemptions
         .filter(r => r.status === 'canjeado')
         .reduce((a,r)=> a + (Number(r.cost)||0), 0);
@@ -201,7 +176,6 @@
         .reduce((a,r)=> a + (Number(r.cost)||0), 0);
 
       const disponibles = Math.max(0, ptsActivosTickets - spentByRedeemed - reservedPending);
-
       $('statPuntosActivos').textContent = disponibles;
       $('statPuntosProx').textContent = proximos.length
         ? `⚠️ ${proximos.reduce((a,b)=>a+b.pts,0)} pts vencen en ~${Math.min(...proximos.map(p=>p.left))} día(s).`
@@ -217,21 +191,23 @@
       tbody.innerHTML = `<tr><td colspan="6" class="err">${msg}</td></tr>`;
     }
 
-    // ====== Suscripción de datos (RTDB) ======
     auth.onAuthStateChanged((user) => {
       if (!user) {
         $('userGreeting').textContent = "Inicia sesión";
         showError("No hay sesión activa.");
         return;
       }
-
       $('userGreeting').textContent = `Hola, ${user.displayName||user.email}`;
 
-      // TICKETS: users/{uid}/tickets
       const tRef = db.ref(`users/${user.uid}/tickets`);
       tRef.on('value', (snap) => {
         const val = snap.val() || {};
         _tickets = Object.values(val).map(t => {
+          const puntosNorm = (
+            (t.puntos && typeof t.puntos === 'object' ? Number(t.puntos.total || 0) : Number(t.puntos || 0)) ||
+            Number(t.puntosTotal || 0) ||
+            Number(t.points || 0)
+          );
           const createdAt = Number(t.createdAt || 0);
           const vencePuntos = t.vencePuntos
             ? Number(t.vencePuntos)
@@ -239,7 +215,7 @@
           return {
             ...t,
             total: Number(t.total || 0),
-            puntos: Number(t.puntos || 0),
+            puntos: puntosNorm,
             createdAt,
             vencePuntos
           };
@@ -248,9 +224,6 @@
         renderTableAndTicketStats();
       }, (err) => showError("Error leyendo tickets: " + err.message));
 
-      // REDEMPTIONS: users/{uid}/redemptions
-      // NOTA: al crear el canje (cliente) y al aprobar (gerente),
-      //       escribe/actualiza también este espejo para que el panel lo vea.
       const rRef = db.ref(`users/${user.uid}/redemptions`);
       rRef.on('value', (snap) => {
         const val = snap.val() || {};
@@ -259,13 +232,12 @@
           cost: Number(r.cost || 0),
           createdAt: Number(r.createdAt || 0),
           expiresAt: r.expiresAt ? Number(r.expiresAt) : null,
-          status: String(r.status || '').toLowerCase() // 'pendiente' | 'canjeado'
+          status: String(r.status || '').toLowerCase()
         }));
         updateHeaderStats();
       }, (err) => console.error("Error leyendo redemptions:", err));
     });
 
-    // Autoplay del video
     (function(){
       const v = document.getElementById('promoVideo');
       if(!v) return;
