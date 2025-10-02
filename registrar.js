@@ -1,3 +1,4 @@
+// registrar.js — RTDB + Cámara + OCR + UI BLOQUEADA (puntos auto 1–15)
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -16,22 +17,24 @@
   const video        = $('cameraVideo');
   const btnShot      = $('btnCapturar');
 
-  const btnOCR       = $('btnProcesarTicket'); // el OCR real está en ocr.js
+  const btnOCR       = $('btnProcesarTicket'); // el procesamiento real está en ocr.js
   const ocrStatus    = $('ocrStatus');
 
   const iNum   = $('inputTicketNumero');
   const iFecha = $('inputTicketFecha');
   const iTotal = $('inputTicketTotal');
 
-  const listaProd       = $('listaProductos');
-  const btnRegistrar    = $('btnRegistrarTicket');
-  const msgTicket       = $('ticketValidacion');
-  const greetEl         = $('userGreeting');
+  const listaProd    = $('listaProductos');
+
+  const btnRegistrar = $('btnRegistrarTicket');
+  const msgTicket    = $('ticketValidacion');
+  const greetEl      = $('userGreeting');
+
   const tablaPuntosBody = ($('tablaPuntos')||{}).querySelector?.('tbody');
   const totalPuntosEl   = $('totalPuntos');
 
   // ===== Políticas =====
-  const VENCE_DIAS = 180; // ≈ 6 meses
+  const VENCE_DIAS = 180; // meses aprox.
   const DAY_LIMIT  = 2;   // máx. tickets por día
 
   // ===== Estado =====
@@ -41,7 +44,7 @@
   // productos = [{ name, qty, price, pointsUnit }]
   let productos = [];
 
-  // ===== Clasificación ligera (Applebee’s MX + genérico) =====
+  // ===== Asignación de puntos 1–15 según categoría =====
   const KW = {
     burgers:["burger","hamburguesa","cheeseburger","bacon"],
     costillas:["ribs","costillas"],
@@ -126,7 +129,7 @@
     setPreview(file);
   }
 
-  // ===== Cámara (OpenCV endereza) =====
+  // ===== Cámara =====
   async function openCamera() {
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -341,24 +344,31 @@
     const fechaStr= iFecha.value;
     const totalNum= parseFloat(iTotal.value || "0") || 0;
 
-    // Validaciones fuertes
-    if (!/^\d{5}$/.test(folio)) {
+    if (!folio || !/^\d{5}$/.test(folio) || !fechaStr || !totalNum) {
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "El número de ticket debe ser exactamente 5 dígitos.";
-      return;
-    }
-    if (!fechaStr || !totalNum) {
-      msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "Faltan fecha o total.";
+      msgTicket.textContent = "Faltan datos válidos: folio (5 dígitos), fecha y total.";
       return;
     }
 
-    // Puntos desde productos detectados
-    const { total: puntosTotal, detalle } = getPuntosDetalle();
-    if (puntosTotal <= 0 || productos.length === 0) {
-      msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "No se detectaron consumos válidos. Repite la foto/ocr.";
-      return;
+    // Calcula puntos
+    let { total: puntosTotal, detalle } = getPuntosDetalle();
+
+    // Fallback: si por OCR no quedaron productos válidos, asigna por tramo de total
+    if (puntosTotal <= 0) {
+      const t = Number(totalNum);
+      let pts;
+      if (t >= 600) pts = 14;
+      else if (t >= 400) pts = 12;
+      else if (t >= 250) pts = 10;
+      else if (t >= 120) pts = 7;
+      else pts = 4;
+
+      productos = [{ name: "Consumo Applebee's", qty: 1, price: t, pointsUnit: pts }];
+      detalle   = [{ producto: "Consumo Applebee's", cantidad: 1, puntos_unitarios: pts, puntos_subtotal: pts }];
+      puntosTotal = pts;
+
+      // refleja en UI
+      renderProductos();
     }
 
     // Límite por día
@@ -379,16 +389,16 @@
     const fecha = new Date(`${fechaStr}T00:00:00`);
     const vencePuntos = addMonths(fecha, VENCE_DIAS/30);
 
-    const userRef   = db.ref(`users/${user.uid}`);
-    const ticketRef = userRef.child(`tickets/${folio}`);
-    const pointsRef = userRef.child('points');
+    const userRef    = db.ref(`users/${user.uid}`);
+    const ticketRef  = userRef.child(`tickets/${folio}`);
+    const pointsRef  = userRef.child('points');
 
-    // Índice global fecha+folio (evita duplicados inter-usuarios)
+    // Índice global fecha+folio para **evitar duplicados** (mismo ticket, misma fecha)
     const ymd = ymdFromISO(fechaStr);
     const indexRef = db.ref(`ticketsIndex/${ymd}/${folio}`);
 
     try {
-      // 1) Índice global
+      // 1) Crea índice si NO existe (reglas .write: !data.exists())
       const idxTx = await indexRef.transaction(curr => {
         if (curr) return; // ya existe → aborta
         return { uid: user.uid, createdAt: Date.now() };
@@ -399,20 +409,17 @@
         return;
       }
 
-      // 2) Ticket del usuario
+      // 2) Crea ticket del usuario (anti-sobrescritura)
       const res = await ticketRef.transaction(current => {
         if (current) return;
         return {
           folio,
           fecha: fechaStr,
           total: totalNum,
-          productos: productos.map(p=>({
-            nombre: p.name,
-            cantidad: p.qty,
-            precioLinea: p.price ?? null,
-            puntos_unitarios: p.pointsUnit
-          })),
+          productos: productos.map(p=>({ nombre: p.name, cantidad: p.qty, precioLinea: p.price ?? null, puntos_unitarios: p.pointsUnit })),
           puntos: { total: puntosTotal, detalle },
+          // Campo plano redundante para tablas/paneles
+          puntosTotal: puntosTotal,
           vencePuntos: vencePuntos.getTime(),
           createdAt: Date.now()
         };
@@ -423,7 +430,7 @@
         return;
       }
 
-      // 3) Suma puntos al perfil
+      // 3) Suma puntos a perfil
       await pointsRef.transaction(curr => (Number(curr)||0) + puntosTotal);
 
       msgTicket.className='validacion-msg ok';
@@ -455,7 +462,11 @@
   // ===== Eventos =====
   btnPickFile?.addEventListener('click', ()=> fileInput?.click());
   btnCam?.addEventListener('click', openCamera);
-  btnClose?.addEventListener('click', ()=>{ stopCamera(); });
+  btnClose?.addEventListener('click', ()=>{ 
+    if (liveStream) liveStream.getTracks().forEach(t=>t.stop());
+    modal.style.display='none'; 
+    modal.setAttribute('aria-hidden','true');
+  });
   btnShot?.addEventListener('click', captureFrame);
 
   fileInput?.addEventListener('change', (e)=>{
@@ -463,7 +474,7 @@
     if (f) { setPreview(f); setStatus("Imagen cargada. Procesa con OCR.", "ok"); }
   });
 
-  // Recibe productos del OCR (ocr.js)
+  // Integra productos detectados por ocr.js
   document.addEventListener('ocr:productos', (ev) => {
     const det = ev.detail || []; // [{name, qty, price}]
     productos = [];
