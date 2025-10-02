@@ -1,9 +1,4 @@
-/* ===========================
-   ocr.js — SOLO OCR + PARSING
-   (No escribe a la BD. Rellena inputs y emite productos)
-   =========================== */
 
-/* ---------- Utils ---------- */
 function normalize(s){
   return String(s||'')
     .toLowerCase()
@@ -18,14 +13,12 @@ function parsePriceMX(raw){
   if(!raw) return null;
   let s = String(raw).replace(/[^\d.,]/g,'').trim();
   if(!s) return null;
-
-  // dual separator
   if(s.includes(',') && s.includes('.')){
-    if (s.lastIndexOf('.') > s.lastIndexOf(',')) s = s.replace(/,/g,''); // 1,234.56 -> 1234.56
-    else s = s.replace(/\./g,'').replace(',', '.'); // 1.234,56 -> 1234.56
+    if (s.lastIndexOf('.') > s.lastIndexOf(',')) s = s.replace(/,/g,'');
+    else s = s.replace(/\./g,'').replace(',', '.');
   } else if (s.includes(',')){
     const m = s.match(/,\d{2}$/);
-    s = m ? s.replace(',', '.') : s.replace(/,/g,''); // 123,45 -> 123.45 | 1,234 -> 1234
+    s = m ? s.replace(',', '.') : s.replace(/,/g,'');
   }
   const n = parseFloat(s);
   return Number.isFinite(n) ? +(n.toFixed(2)) : null;
@@ -39,7 +32,7 @@ function splitLinesForReceipt(text){
     .filter(Boolean);
 }
 
-// líneas “meta” que NO son producto
+// líneas meta (no productos)
 function isMetaLine(line){
   return /sub-?total|subtotal|iva|impuesto|impt\.?\.?total|^total\s*$|^total\s*:|reimpres|propina|servicio|service|mesa|clientes?|visa|master|tarjeta|auth|autoriz|método|metodo|pago|efectivo|cambio/i.test(line);
 }
@@ -54,87 +47,70 @@ function lineEndsWithPrice(line){
   return { namePart, price };
 }
 
-/* ---------- NÚMERO de ticket robusto ---------- */
-function isLikelyPrice(s) {
-  return /[$]\s*\d|^\s*\d{1,3}([.,]\d{3})*([.,]\d{2})\s*$/.test(s);
+/* ---------- Folio EXACTO de 5 dígitos ---------- */
+function isLikelyPrice(s){ return /[$]\s*\d|^\s*\d{1,3}([.,]\d{3})*([.,]\d{2})\s*$/.test(s); }
+function tokenizeLine(line){
+  return String(line||'').replace(/[^\w:\-#]/g, ' ').split(/\s+/).filter(Boolean);
 }
-function tokenizeLine(line) {
-  return String(line||'')
-    .replace(/[^\w:\-#]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
-}
-function findDateTokens(allText) {
+function findDateTokens(allText){
   const m = allText.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](20\d{2})/);
   if (!m) return null;
-  return { d: +m[1], m: +m[2], y: +m[3], raw: m[0] };
+  return { d:+m[1], m:+m[2], y:+m[3], raw:m[0] };
 }
-function findTimeTokens(allText) {
+function findTimeTokens(allText){
   const m = allText.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
   if (!m) return null;
-  return { h: +m[1], min: +m[2], ap: (m[3]||'').toLowerCase(), raw: m[0] };
+  return { h:+m[1], min:+m[2], ap:(m[3]||'').toLowerCase(), raw:m[0] };
 }
-function extractTicketNumber(lines, allText) {
+function extractTicketNumber(lines, allText){
   const dateTok = findDateTokens(allText);
   const timeTok = findTimeTokens(allText);
 
-  // 1) Etiquetas explícitas
+  // 1) Etiquetas explícitas -> solo 5 dígitos
   const tagRx = /(folio|ticket|tkt|transac(?:cion)?|transacción|venta|nota|id|no\.?|n°|nº|num\.?|orden|order)\s*(?:#|:)?\s*([a-z0-9\-]{3,})/i;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i=0;i<Math.min(lines.length,40);i++){
     const m = lines[i].match(tagRx);
     if (m) {
-      const cand = m[2].replace(/[^a-z0-9\-]/gi,'').toUpperCase();
-      if (!isLikelyPrice(cand) && /\d/.test(cand)) return cand;
+      const cand = m[2].replace(/[^0-9]/g,'');
+      if (/^\d{5}$/.test(cand)) return cand;
     }
   }
 
-  // 2) Candidatos 4–8 dígitos; puntuación por cercanía a Mesero/Mesa/Clientes/Reimpresión y fecha/hora
+  // 2) Tokens candidatos → preferimos 5 dígitos exactos
   const nearWords = ["mesero","mesa","clientes","reimpres","reimpresión","reimpresion","cajero"];
-  const candidates = [];
-  for (let i = 0; i < Math.min(lines.length, 45); i++) {
+  const five = []; // candidatos de 5
+  for (let i=0;i<Math.min(lines.length,45);i++){
     const raw = lines[i]; if (!raw) continue;
     const line = raw.trim();
     const tokens = tokenizeLine(line);
-    tokens.forEach(tok => {
-      if (/^\d{4,8}$/.test(tok)) {
-        const num = parseInt(tok, 10);
-        if (dateTok && (num === dateTok.y || num === dateTok.d || num === dateTok.m)) return;
-        if (timeTok && (num === timeTok.h || num === timeTok.min)) return;
+    tokens.forEach(tok=>{
+      if (/^\d{5}$/.test(tok)) {
         if (isLikelyPrice(line)) return;
-
+        // descarta coincidencias claras con fecha/hora
+        const v = +tok;
+        if (dateTok && (v === dateTok.y || v === dateTok.d || v === dateTok.m)) return;
+        if (timeTok && (v === timeTok.h || v === timeTok.min)) return;
         let score = 1;
-        const low = ' ' + line.toLowerCase() + ' ';
-        nearWords.forEach(w => { if (low.includes(' ' + w + ' ')) score += 2; });
-        if (dateTok && line.includes(dateTok.raw)) score += 2;
-        if (timeTok && line.includes(timeTok.raw)) score += 2;
-        if (i <= 12) score += 1; // suele ir arriba
-
-        candidates.push({ tok, score });
+        const low = ' '+line.toLowerCase()+' ';
+        nearWords.forEach(w=>{ if (low.includes(' '+w+' ')) score += 2; });
+        if (i <= 12) score += 1;
+        five.push({ tok, score });
       }
     });
   }
-  if (candidates.length) {
-    candidates.sort((a,b)=> b.score - a.score);
-    return String(candidates[0].tok).toUpperCase();
-  }
+  if (five.length){ five.sort((a,b)=>b.score-a.score); return five[0].tok; }
 
-  // 3) Último recurso
-  for (let i = 0; i < Math.min(lines.length, 50); i++) {
-    const l = lines[i].trim();
-    const m = l.match(/(?:^|\s)(\d{4,8})(?:\s|$)/);
-    if (m && !isLikelyPrice(l)) return m[1].toUpperCase();
-  }
+  // 3) No hay 5 dígitos → devolvemos null (no rellenamos)
   return null;
 }
 
-/* ---------- Productos desde líneas ---------- */
+/* ---------- Productos ---------- */
 function parseItemsFromLines(lines){
   const items = [];
   let bufferName = '';
 
   const PUSH = (name, price) => {
     if(!name) return;
-    // cantidad: x2 / 2x / “2 ” al inicio
     let qty = 1;
     const qm = name.match(/(?:^|\s)(?:x\s*)?(\d{1,2})(?:\s*x)?(?:\s|$)/i);
     if(qm) qty = Math.max(1, parseInt(qm[1],10));
@@ -143,7 +119,6 @@ function parseItemsFromLines(lines){
       .replace(/\s{2,}/g,' ')
       .trim();
 
-    // ignora promos típicas precio 0
     if (/2x1|bono|desc|promo|promoción|desayunos/i.test(name) && price === 0) return;
 
     items.push({ name, qty, price });
@@ -162,7 +137,6 @@ function parseItemsFromLines(lines){
       continue;
     }
 
-    // posible wrap de nombre
     if (line.length >= 3 && !/^\d{1,4}$/.test(line)) {
       const next = lines[i+1] || '';
       if (next && isMetaLine(next)) { bufferName = ''; continue; }
@@ -170,7 +144,7 @@ function parseItemsFromLines(lines){
     }
   }
 
-  // compacta por nombre
+  // Compactar por nombre
   const compact = [];
   for(const it of items){
     const j = compact.findIndex(x => x.name.toLowerCase() === it.name.toLowerCase());
@@ -185,9 +159,8 @@ function parseItemsFromLines(lines){
   return compact;
 }
 
-/* ---------- TOTAL pagado (incluyendo propina) ---------- */
+/* ---------- Total FINAL (después de Propina) ---------- */
 function detectGrandTotal(lines){
-  // 1) Busca “Propina/Servicio” y toma el último “Total” después de eso
   let propIndex = -1;
   for (let i=0;i<lines.length;i++){
     if (/propina|servicio|service/i.test(lines[i])) propIndex = i;
@@ -204,7 +177,6 @@ function detectGrandTotal(lines){
       }
     }
   }
-  // 2) Sin propina: toma el ÚLTIMO “Total” válido
   for (let i=lines.length-1; i>=0; i--){
     const l = lines[i];
     if (/\btotal\b/i.test(l) && !/impt|imp\.?t|iva|sub/i.test(l)) {
@@ -215,7 +187,6 @@ function detectGrandTotal(lines){
       }
     }
   }
-  // 3) Último recurso: mayor importe del ticket
   const nums = [];
   lines.forEach(l=>{
     const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
@@ -225,15 +196,14 @@ function detectGrandTotal(lines){
   return null;
 }
 
-/* ---------- Parseo principal (número, fecha, total, productos) ---------- */
+/* ---------- Parseo principal ---------- */
 function parseTicketText(text){
   const lines = splitLinesForReceipt(text);
   const all   = lines.join('\n');
 
-  // Número de ticket (flecha roja)
-  const numero = extractTicketNumber(lines, all);
+  const numero = extractTicketNumber(lines, all); // 5 dígitos o null
 
-  // Fecha (flecha azul) -> YYYY-MM-DD
+  // Fecha (YYYY-MM-DD)
   let fechaISO = null;
   const dm = all.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
   if (dm){
@@ -242,17 +212,15 @@ function parseTicketText(text){
     fechaISO = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
   }
 
-  // Total pagado (flecha amarilla)
   const total = detectGrandTotal(lines);
 
-  // Productos (flechas verdes)
   const productosDetectados = parseItemsFromLines(lines).filter(p => p.price > 0);
 
   return {
     numero,
     fecha: fechaISO,
     total: total!=null ? total.toFixed(2) : null,
-    productosDetectados // [{name, qty, price}]
+    productosDetectados
   };
 }
 
@@ -283,7 +251,7 @@ async function recognizeImageToText(file){
   return text;
 }
 
-/* ---------- Punto de entrada (botón “Procesar ticket”) ---------- */
+/* ---------- Punto de entrada ---------- */
 async function leerTicket(){
   const input = document.getElementById("ticketImage") || document.getElementById("ticketFile");
   const file  = input?.files?.[0];
@@ -296,15 +264,15 @@ async function leerTicket(){
     const text = await recognizeImageToText(file);
     const { numero, fecha, total, productosDetectados } = parseTicketText(text);
 
-    // Rellena inputs
     const iNum   = document.getElementById('inputTicketNumero');
     const iFecha = document.getElementById('inputTicketFecha');
     const iTotal = document.getElementById('inputTicketTotal');
-    if (iNum && numero)   iNum.value   = numero;
-    if (iFecha && fecha)  iFecha.value = fecha;
-    if (iTotal && total)  iTotal.value = parseFloat(total).toFixed(2);
 
-    // Emite productos para registrar.js (UI bloqueada)
+    if (iNum)   iNum.value   = (numero && /^\d{5}$/.test(numero)) ? numero : "";
+    if (iFecha) iFecha.value = fecha || "";
+    if (iTotal) iTotal.value = total ? parseFloat(total).toFixed(2) : "";
+
+    // Publica productos a registrar.js
     window.__ocrProductos = productosDetectados || [];
     document.dispatchEvent(new CustomEvent('ocr:productos', { detail: window.__ocrProductos }));
 
