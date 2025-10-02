@@ -1,4 +1,3 @@
-// registrar.js — RTDB + Cámara + OCR + UI BLOQUEADA (puntos auto 1–15)
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -17,24 +16,22 @@
   const video        = $('cameraVideo');
   const btnShot      = $('btnCapturar');
 
-  const btnOCR       = $('btnProcesarTicket'); // el OCR real vive en ocr.js
+  const btnOCR       = $('btnProcesarTicket'); // el OCR real está en ocr.js
   const ocrStatus    = $('ocrStatus');
 
   const iNum   = $('inputTicketNumero');
   const iFecha = $('inputTicketFecha');
   const iTotal = $('inputTicketTotal');
 
-  const listaProd    = $('listaProductos');
-
-  const btnRegistrar = $('btnRegistrarTicket');
-  const msgTicket    = $('ticketValidacion');
-  const greetEl      = $('userGreeting');
-
+  const listaProd       = $('listaProductos');
+  const btnRegistrar    = $('btnRegistrarTicket');
+  const msgTicket       = $('ticketValidacion');
+  const greetEl         = $('userGreeting');
   const tablaPuntosBody = ($('tablaPuntos')||{}).querySelector?.('tbody');
   const totalPuntosEl   = $('totalPuntos');
 
   // ===== Políticas =====
-  const VENCE_DIAS = 180; // meses aprox.
+  const VENCE_DIAS = 180; // ≈ 6 meses
   const DAY_LIMIT  = 2;   // máx. tickets por día
 
   // ===== Estado =====
@@ -44,7 +41,7 @@
   // productos = [{ name, qty, price, pointsUnit }]
   let productos = [];
 
-  // ===== Asignación de puntos 1–15 según categoría (ligera) =====
+  // ===== Clasificación ligera (Applebee’s MX + genérico) =====
   const KW = {
     burgers:["burger","hamburguesa","cheeseburger","bacon"],
     costillas:["ribs","costillas"],
@@ -97,7 +94,6 @@
     ocrStatus.textContent = msg || '';
   }
   function disableAllEdits() {
-    // inputs solo lectura/bloqueados (UI fija por foto)
     [iNum,iFecha,iTotal].forEach(x=>{ if(x){ x.readOnly = true; x.disabled = true; }});
   }
   function setPreview(file) {
@@ -345,20 +341,27 @@
     const fechaStr= iFecha.value;
     const totalNum= parseFloat(iTotal.value || "0") || 0;
 
-    if (!folio || !fechaStr || !totalNum) {
+    // Validaciones fuertes
+    if (!/^\d{5}$/.test(folio)) {
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "Faltan datos obligatorios: número, fecha y total.";
+      msgTicket.textContent = "El número de ticket debe ser exactamente 5 dígitos.";
+      return;
+    }
+    if (!fechaStr || !totalNum) {
+      msgTicket.className='validacion-msg err';
+      msgTicket.textContent = "Faltan fecha o total.";
       return;
     }
 
+    // Puntos desde productos detectados
     const { total: puntosTotal, detalle } = getPuntosDetalle();
-    if (puntosTotal <= 0) {
+    if (puntosTotal <= 0 || productos.length === 0) {
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent = "No se detectaron consumos con puntos.";
+      msgTicket.textContent = "No se detectaron consumos válidos. Repite la foto/ocr.";
       return;
     }
 
-    // límite por día
+    // Límite por día
     if (DAY_LIMIT > 0) {
       try {
         const { start, end } = startEndOfToday();
@@ -380,12 +383,12 @@
     const ticketRef = userRef.child(`tickets/${folio}`);
     const pointsRef = userRef.child('points');
 
-    // Índice global fecha+folio para **evitar duplicados** (mismo ticket, misma fecha)
+    // Índice global fecha+folio (evita duplicados inter-usuarios)
     const ymd = ymdFromISO(fechaStr);
     const indexRef = db.ref(`ticketsIndex/${ymd}/${folio}`);
 
     try {
-      // 1) Crea índice si NO existe (reglas .write: !data.exists())
+      // 1) Índice global
       const idxTx = await indexRef.transaction(curr => {
         if (curr) return; // ya existe → aborta
         return { uid: user.uid, createdAt: Date.now() };
@@ -396,14 +399,19 @@
         return;
       }
 
-      // 2) Crea ticket del usuario (anti-sobrescritura)
+      // 2) Ticket del usuario
       const res = await ticketRef.transaction(current => {
         if (current) return;
         return {
           folio,
           fecha: fechaStr,
           total: totalNum,
-          productos: productos.map(p=>({ nombre: p.name, cantidad: p.qty, precioLinea: p.price ?? null, puntos_unitarios: p.pointsUnit })),
+          productos: productos.map(p=>({
+            nombre: p.name,
+            cantidad: p.qty,
+            precioLinea: p.price ?? null,
+            puntos_unitarios: p.pointsUnit
+          })),
           puntos: { total: puntosTotal, detalle },
           vencePuntos: vencePuntos.getTime(),
           createdAt: Date.now()
@@ -415,7 +423,7 @@
         return;
       }
 
-      // 3) Suma puntos
+      // 3) Suma puntos al perfil
       await pointsRef.transaction(curr => (Number(curr)||0) + puntosTotal);
 
       msgTicket.className='validacion-msg ok';
@@ -455,13 +463,11 @@
     if (f) { setPreview(f); setStatus("Imagen cargada. Procesa con OCR.", "ok"); }
   });
 
-  // Integración con ocr.js: carga de productos detectados
+  // Recibe productos del OCR (ocr.js)
   document.addEventListener('ocr:productos', (ev) => {
     const det = ev.detail || []; // [{name, qty, price}]
     productos = [];
-    if (Array.isArray(det)) det.forEach(p => upsertProducto(
-      p.name, p.qty || 1, typeof p.price==='number' ? p.price : null
-    ));
+    if (Array.isArray(det)) det.forEach(p => upsertProducto(p.name, p.qty || 1, typeof p.price==='number' ? p.price : null));
   });
 
   btnRegistrar?.addEventListener('click', registrarTicketRTDB);
