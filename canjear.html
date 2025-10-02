@@ -13,12 +13,14 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
   <script src="firebase-config.js"></script>
 
-  <!-- QRCode -->
+  <!-- QRCode (CDN) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
   <style>
     .page { max-width: 980px; margin: 110px auto 60px; padding: 16px; }
     .page h2 { margin-bottom: 10px; }
+    .stat-line { margin: 12px 0 8px; font-weight: 700; }
+    .subline { margin: 0 0 18px; opacity: .9; }
     .warn { color:#ffdfaa; } .ok{color:#64db64;} .err{color:#ff9a9a;}
 
     table { width:100%; border-collapse: collapse; font-size:14px;
@@ -26,9 +28,6 @@
       border-radius:12px; overflow:hidden; margin-bottom: 18px; }
     th, td { padding:10px 8px; border-bottom:1px solid rgba(255,255,255,.08); }
     th { text-align:left; color:#ffd4d4; }
-
-    .stat-line { margin: 12px 0 8px; font-weight: 700; }
-    .subline { margin: 0 0 18px; opacity: .9; }
 
     .rewards { display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
     .reward-card {
@@ -38,13 +37,29 @@
     .reward-card h4 { margin:0; }
     .reward-card .cost { font-weight:700; color:#ffd4d4; }
     .reward-card .btn-cta { align-self:flex-start; }
+    .reward-card a, .reward-card button { text-decoration:none; }
 
     .qr-box{ display:none; margin-top:20px; padding:16px;
       background: rgba(25,25,25,.7); border:1px solid rgba(255,255,255,.08);
       border-radius:16px; }
     .qr-row{ display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
     #qrcode{ width:180px; height:180px; background:#fff; padding:8px; border-radius:8px; }
-    .qr-actions{ margin-top: 14px; display:flex; gap:10px; flex-wrap:wrap; }
+    .qr-info small{ opacity:.85; }
+    .qr-actions{
+      margin-top: 14px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .code-row{
+      display:flex; align-items:center; gap:8px; margin-top:8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .code-pill{
+      background:#111; border:1px solid rgba(255,255,255,.14);
+      padding:6px 10px; border-radius:10px; letter-spacing:1px;
+    }
 
     .hist { margin-top: 26px; }
     .hist-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
@@ -59,20 +74,16 @@
     .hist-qr { width:150px; height:150px; background:#fff; padding:6px; border-radius:8px; }
     .hist-actions { display:flex; gap:8px; flex-wrap:wrap; }
 
-    /* Header pills */
-    .link-back{ text-decoration:none; }
-    .link-back--pill {
-      color:#fff; background:#f03535; border:2px solid #f03535;
-      padding:7px 14px; border-radius:10px; text-decoration:none; font-weight:700;
-    }
-    .top-bar a, .top-bar a:link, .top-bar a:visited, .top-bar a:hover, .top-bar a:focus {
-      text-decoration:none!important; border-bottom:none!important; box-shadow:none!important;
-    }
+    .link-back--pill { color:#ffffff; background:#f03535; border:2px solid #f03535;
+      padding: 7px 14px; border-radius: 10px; text-decoration: none; font-weight: 700; }
+    .link-back--pill:hover { background: rgb(243, 164, 164); }
+
+    .top-bar a{ text-decoration:none !important; }
   </style>
 </head>
 <body class="bg-animated">
   <header class="top-bar">
-    <a href="panel.html" class="link-back link-back--pill">Volver</a>
+    <a href="panel.html" class="link-back--pill">Volver</a>
     <div class="center-section"><p>Canjear puntos</p></div>
     <div class="right-section">
       <button id="btnLogout" class="btn-cta btn-logout" type="button">Salir</button>
@@ -83,11 +94,12 @@
     <h2>Mis puntos</h2>
 
     <table id="tablaPuntos">
-      <thead><tr><th>Puntos</th><th>Vence</th><th>Estatus</th></tr></thead>
+      <thead>
+        <tr><th>Puntos</th><th>Vence</th><th>Estatus</th></tr>
+      </thead>
       <tbody></tbody>
     </table>
 
-    <!-- Disponibles = activos (tickets) - canjeados - pendientes vigentes -->
     <div class="stat-line">
       Actualmente tienes <span id="puntosActivos" class="ok" data-value="0">0</span> puntos disponibles.
     </div>
@@ -97,26 +109,28 @@
     <h3 style="margin:18px 0 10px;">Puedes cambiarlos por:</h3>
     <section class="rewards" id="rewardsGrid"></section>
 
-    <!-- Caja QR -->
+    <!-- QR + CÓDIGO -->
     <section class="qr-box" id="qrBox">
-      <h3>Tu cupón QR</h3>
+      <h3>Tu cupón</h3>
       <div class="qr-row">
         <div id="qrcode"></div>
         <div class="qr-info">
           <div><strong id="rewardName">Recompensa</strong></div>
           <div>Coste: <span id="rewardCost">0</span> pts</div>
+          <div class="code-row">Código: <span id="codeText" class="code-pill">—</span>
+            <button id="btnCopyCode" class="btn-secondary" type="button" style="display:none;">Copiar código</button>
+          </div>
           <div>Válido hasta: <span id="qrExpires"></span> (3 días)</div>
           <div class="qr-actions">
             <a id="btnDownloadQR" class="btn-cta" href="#" style="display:none;">Descargar QR</a>
             <button id="btnOpenQR" class="btn-secondary" type="button" style="display:none;">Abrir imagen</button>
-            <button id="btnCopyPayload" class="btn-secondary" type="button" style="display:none;">Copiar código</button>
+            <button id="btnCopyPayload" class="btn-secondary" type="button" style="display:none;">Copiar QR (texto)</button>
           </div>
-          <small>Este QR es de un solo uso. Un gerente lo escaneará para validar y canjear.</small>
+          <small>El gerente puede escanear el QR <em>o</em> teclear el <b>código</b> para validar el canje (un solo uso).</small>
         </div>
       </div>
     </section>
 
-    <!-- Historial -->
     <section class="hist" id="hist">
       <h3 style="margin:18px 0 10px;">Historial de cupones</h3>
       <div id="histGrid" class="hist-grid"></div>
@@ -125,261 +139,246 @@
   </main>
 
   <script>
-    const auth = firebase.auth();
-    const db   = firebase.database();
+  const auth = firebase.auth();
+  const db   = firebase.database();
 
-    const $ = (id)=>document.getElementById(id);
-    const tbody = document.querySelector('#tablaPuntos tbody');
+  const $ = (id)=>document.getElementById(id);
+  const tbody = document.querySelector('#tablaPuntos tbody');
 
-    // Catálogo fijo (si más tarde lo mueves a RTDB, es trivial)
-    const REWARDS = [
-      { id:'limonada',    name:'Limonada 16 oz',       cost:100 },
-      { id:'papas',       name:'Papas fritas',         cost:200 },
-      { id:'hamburguesa', name:'Hamburguesa sencilla', cost:300 },
-      { id:'brownie',     name:'Brownie con helado',   cost:450 },
-      { id:'combo-kids',  name:'Combo infantil',       cost:600 },
-    ];
+  // Catálogo
+  const REWARDS = [
+    { id:'limonada',    name:'Limonada 16 oz',       cost:100 },
+    { id:'papas',       name:'Papas fritas',         cost:200 },
+    { id:'hamburguesa', name:'Hamburguesa sencilla', cost:300 },
+    { id:'brownie',     name:'Brownie con helado',   cost:450 },
+    { id:'combo-kids',  name:'Combo infantil',       cost:600 },
+  ];
 
-    function renderRewards(){
-      $('rewardsGrid').innerHTML = REWARDS.map(r => `
-        <article class="reward-card">
-          <h4>${r.name}</h4>
-          <div class="cost">${r.cost} pts</div>
-          <button class="btn-cta" data-reward="${r.id}">Generar QR</button>
-        </article>
-      `).join('');
-    }
+  function renderRewards(){
+    $('rewardsGrid').innerHTML = REWARDS.map(r => `
+      <article class="reward-card">
+        <h4>${r.name}</h4>
+        <div class="cost">${r.cost} pts</div>
+        <button class="btn-cta" data-reward="${r.id}">Generar QR</button>
+      </article>
+    `).join('');
+  }
 
-    function fmtDate(ms){ if(!ms) return ''; return new Date(ms).toLocaleDateString('es-MX',{year:'numeric',month:'2-digit',day:'2-digit'}); }
-    function daysLeft(ms){ if(!ms) return -999; return Math.ceil((ms - Date.now())/86400000); }
+  function fmtDate(ms){ if(!ms) return ''; return new Date(ms).toLocaleDateString('es-MX',{year:'numeric',month:'2-digit',day:'2-digit'}); }
+  function daysLeft(ms){ if(!ms) return -999; return Math.ceil((ms - Date.now())/86400000); }
 
-    // Estado local
-    let _tickets = [];   // users/{uid}/tickets
-    let _redemps = [];   // users/{uid}/redemptions (espejo)
+  let _tickets = [];     // tickets (RTDB)
+  let _redemps = [];     // redemptions (espejo RTDB)
 
-    function renderPoints(){
-      // 1) Sumar puntos de tickets activos
-      let ptsTicketsActivos = 0, proximos = [];
-      const rows = [];
-
-      _tickets.forEach(t=>{
-        const pts = Number(t.puntos || t.puntos?.total || 0); // tolerante si guardaste objeto/numero
-        if (!pts) return;
-
-        const vence = t.vencePuntos ? Number(t.vencePuntos) : null;
-        const left  = (vence!=null) ? daysLeft(vence) : 9999;
-        const estatus = (vence==null || left >= 0) ? 'Activo' : 'Vencido';
-
-        if (estatus === 'Activo'){
-          ptsTicketsActivos += pts;
-          if (left <= 14) proximos.push({ pts, left });
-        }
-
-        rows.push(`<tr>
-          <td>${pts}</td>
-          <td>${fmtDate(vence) || '-'}</td>
-          <td style="font-weight:700; ${estatus==='Activo'?'color:#9be49b':'color:#ff9a9a'}">${estatus}</td>
-        </tr>`);
-      });
-
-      tbody.innerHTML = rows.length ? rows.join('') : `<tr><td colspan="3" class="warn">Sin puntos registrados.</td></tr>`;
-
-      // 2) Puntos gastados (canjeados)
-      const spent = _redemps
-        .filter(r => String(r.status||'').toLowerCase() === 'canjeado')
-        .reduce((a,r)=> a + (Number(r.cost)||0), 0);
-
-      // 3) Puntos reservados (pendientes y no vencidos)
-      const now = Date.now();
-      const reserved = _redemps
-        .filter(r => String(r.status||'').toLowerCase() === 'pendiente')
-        .filter(r => !r.expiresAt || Number(r.expiresAt) > now)
-        .reduce((a,r)=> a + (Number(r.cost)||0), 0);
-
-      // 4) Disponibles = activos - canjeados - reservados
-      const available = Math.max(0, ptsTicketsActivos - spent - reserved);
-      const span = $('puntosActivos');
-      span.textContent = String(available);
-      span.dataset.value = String(available);
-
-      $('avisoVencen').textContent = proximos.length
-        ? `⚠️ ${proximos.reduce((a,b)=>a+b.pts,0)} pts vencen en ~${Math.min(...proximos.map(p=>p.left))} día(s).`
-        : '';
-      $('avisoReservados').textContent = reserved > 0
-        ? `Tienes ${reserved} pts reservados en cupones pendientes.`
-        : '';
-    }
-
-    function renderHistory(){
-      const grid = $('histGrid'), empty = $('histEmpty');
-      grid.innerHTML = '';
-      const now = Date.now();
-
-      const items = _redemps.filter(r=>{
-        if (String(r.status||'').toLowerCase() === 'pendiente' && r.expiresAt)
-          return Number(r.expiresAt) > now; // oculta pendientes vencidos
-        return true;
-      });
-
-      if (!items.length){ empty.style.display='block'; return; }
-      empty.style.display='none';
-
-      items.forEach(d=>{
-        const id = d.code;
-        const expStr = fmtDate(d.expiresAt);
-        const st = String(d.status||'').toLowerCase();
-        const chipCls = st==='pendiente' ? 'chip-warn' : (st==='canjeado' ? 'chip-ok' : 'chip-err');
-        const needsQR = st === 'pendiente';
-        const qrBoxId = `qr-hist-${id}`, dlId=`dl-${id}`, opId=`op-${id}`, cpId=`cp-${id}`;
-        const rewardLabel = d.rewardName || d.rewardId;
-
-        grid.insertAdjacentHTML('beforeend', `
-          <article class="hist-card">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <strong>${rewardLabel}</strong>
-              <span class="chip ${chipCls}">${d.status}</span>
-            </div>
-            <div>Coste: <b>${d.cost||0} pts</b></div>
-            <div>Expira: <b>${expStr || '-'}</b></div>
-
-            ${needsQR ? `
-              <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                <div id="${qrBoxId}" class="hist-qr"></div>
-                <div class="hist-actions">
-                  <a id="${dlId}" class="btn-cta" href="#" style="display:none;">Descargar</a>
-                  <button id="${opId}" class="btn-secondary" type="button" style="display:none;">Abrir</button>
-                  <button id="${cpId}" class="btn-secondary" type="button" style="display:none;">Copiar código</button>
-                </div>
-              </div>
-            ` : `<div class="ok">Canjeado.</div>`}
-          </article>
-        `);
-
-        if (needsQR && d.qrPayload){
-          const el = document.getElementById(qrBoxId);
-          el.innerHTML = '';
-          new QRCode(el, { text: d.qrPayload, width: 150, height: 150 });
-          setTimeout(()=>{
-            const dataURL = getQrDataURLFrom(el);
-            if (dataURL){
-              const a = document.getElementById(dlId);
-              const op= document.getElementById(opId);
-              const cp= document.getElementById(cpId);
-              const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
-              a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
-              op.style.display='inline-flex'; op.onclick = ()=> window.open(dataURL,'_blank','noopener');
-              cp.style.display='inline-flex'; cp.onclick = async ()=>{ try{ await navigator.clipboard.writeText(d.qrPayload); alert('Código del QR copiado.'); }catch{ alert('No se pudo copiar.'); } };
-            }
-          }, 60);
-        }
-      });
-    }
-
-    function getQrDataURLFrom(containerEl){
-      if (!containerEl) return null;
-      const img = containerEl.querySelector('img');
-      if (img && img.src && img.src.startsWith('data:image')) return img.src;
-      const canvas = containerEl.querySelector('canvas');
-      if (canvas && canvas.toDataURL) return canvas.toDataURL('image/png');
-      return null;
-    }
-    function getMainQrDataURL(){ return getQrDataURLFrom(document.getElementById('qrcode')); }
-    function prepareMainQrDownloadUI(fileName, payloadText){
-      const a = $('btnDownloadQR'), openBtn = $('btnOpenQR'), copyBtn = $('btnCopyPayload');
-      const dataURL = getMainQrDataURL();
-      if (!dataURL){ setTimeout(()=>prepareMainQrDownloadUI(fileName, payloadText), 60); return; }
-      a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
-      openBtn.style.display='inline-flex'; openBtn.onclick = ()=> window.open(dataURL,'_blank','noopener');
-      copyBtn.style.display='inline-flex'; copyBtn.onclick = async ()=>{ try{ await navigator.clipboard.writeText(payloadText); alert('Código del QR copiado.'); } catch{ alert('No se pudo copiar.'); } };
-    }
-
-    function generarCodigo(len = 10) {
-      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-      let out = '';
-      for (let i=0; i<len; i++) out += alphabet[Math.floor(Math.random()*alphabet.length)];
-      return out;
-    }
-
-    async function canjearReward(reward) {
-      const user = auth.currentUser;
-      if (!user) return alert('Debes iniciar sesión.');
-
-      // Disponibles calculados (igual que en panel)
-      const disponibles = Number(($('puntosActivos').dataset.value)||0);
-      if (disponibles < reward.cost) {
-        return alert(`Te faltan ${reward.cost - disponibles} puntos para canjear ${reward.name}.`);
-      }
-
-      // Creamos el cupón PENDIENTE (reserva lógica); el disponible ya lo resta por "reservados"
-      const code = generarCodigo(10);
-      const expiresAt = Date.now() + 3*24*60*60*1000; // 3 días
-      const payloadObj = { v:1, brand:"Applebee's", uid:user.uid, code, rewardId:reward.id, cost:reward.cost, exp:expiresAt };
-      const payload = JSON.stringify(payloadObj);
-
-      const updates = {};
-      updates[`/redeems/${code}`] = {
-        code, userId:user.uid, rewardId:reward.id, cost:reward.cost,
-        status:'pending', createdAt:Date.now(), expiresAt
-      };
-      updates[`/users/${user.uid}/redemptions/${code}`] = {
-        code, rewardId:reward.id, rewardName:reward.name, cost:reward.cost,
-        status:'pendiente', createdAt:Date.now(), expiresAt, qrPayload: payload
-      };
-
-      try {
-        await db.ref().update(updates);
-
-        // Mostrar QR
-        $('qrBox').style.display = 'block';
-        $('rewardName').textContent = reward.name;
-        $('rewardCost').textContent = String(reward.cost);
-        $('qrExpires').textContent  = fmtDate(expiresAt);
-        const qrEl = $('qrcode'); qrEl.innerHTML = '';
-        new QRCode(qrEl, { text: payload, width: 180, height: 180 });
-        const fileName = `cupon_${reward.id}_${code}.png`;
-        setTimeout(()=> prepareMainQrDownloadUI(fileName, payload), 60);
-        $('qrBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      } catch (e) {
-        console.error(e);
-        alert('No se pudo crear el canje. Intenta de nuevo.');
-      }
-    }
-
-    // ====== Suscripciones / UI ======
-    auth.onAuthStateChanged((user)=>{
-      if(!user){ location.href='index.html'; return; }
-      $('btnLogout').onclick = async ()=>{ try{ await auth.signOut(); location.href='index.html'; }catch{} };
-
-      renderRewards();
-
-      // Tickets
-      db.ref(`users/${user.uid}/tickets`).on('value', (snap)=>{
-        const val = snap.val() || {};
-        // normaliza: si guardaste puntos como objeto, usa puntos.total
-        _tickets = Object.values(val).map(t => ({
-          ...t,
-          puntos: (typeof t.puntos === 'number') ? t.puntos : Number(t.puntos?.total||0),
-          vencePuntos: t.vencePuntos ? Number(t.vencePuntos) : null
-        }));
-        renderPoints();
-      });
-
-      // Redemptions espejo
-      db.ref(`users/${user.uid}/redemptions`).on('value', (snap)=>{
-        const val = snap.val() || {};
-        _redemps = Object.keys(val).map(k => ({ code:k, ...val[k] }));
-        renderHistory();
-        renderPoints();
-      });
-
-      // Click catálogo
-      $('rewardsGrid').addEventListener('click', (ev)=>{
-        const btn = ev.target.closest('button[data-reward]'); if(!btn) return;
-        const rewardId = btn.getAttribute('data-reward');
-        const r = REWARDS.find(x=>x.id===rewardId);
-        canjearReward(r);
-      });
+  function renderPoints(){
+    let ptsTicketsActivos = 0, proximos = [];
+    const rows = [];
+    _tickets.forEach(t=>{
+      const pts = Number(t.puntos||0);
+      if(!pts) return;
+      const left = t.vencePuntos ? daysLeft(Number(t.vencePuntos)) : 9999;
+      const venc = fmtDate(Number(t.vencePuntos));
+      const estatus = (left >= 0) ? 'Activo' : 'Vencido';
+      if (estatus==='Activo'){ ptsTicketsActivos += pts; if (left<=14) proximos.push({pts,left}); }
+      rows.push(`<tr><td>${pts}</td><td>${venc||'-'}</td><td style="font-weight:700; ${estatus==='Activo'?'color:#9be49b':'color:#ff9a9a'}">${estatus}</td></tr>`);
     });
-  </script>
+    tbody.innerHTML = rows.length ? rows.join('') : `<tr><td colspan="3" class="warn">Sin puntos registrados.</td></tr>`;
+
+    const spent = _redemps.filter(r => r.status === 'canjeado').reduce((a,r)=> a + (Number(r.cost)||0), 0);
+    const now = Date.now();
+    const reserved = _redemps
+      .filter(r => r.status === 'pendiente')
+      .filter(r => !r.expiresAt || Number(r.expiresAt) > now)
+      .reduce((a,r)=> a + (Number(r.cost)||0), 0);
+
+    const available = Math.max(0, ptsTicketsActivos - spent - reserved);
+    const span = $('puntosActivos');
+    span.textContent = String(available);
+    span.dataset.value = String(available);
+
+    $('avisoVencen').textContent = proximos.length
+      ? `⚠️ ${proximos.reduce((a,b)=>a+b.pts,0)} pts vencen en ~${Math.min(...proximos.map(p=>p.left))} día(s).`
+      : '';
+    $('avisoReservados').textContent = reserved > 0
+      ? `Tienes ${reserved} pts reservados en cupones pendientes.`
+      : '';
+  }
+
+  function renderHistory(){
+    const grid = $('histGrid'), empty = $('histEmpty');
+    grid.innerHTML = '';
+    const now = Date.now();
+
+    const items = _redemps.filter(r=>{
+      if (r.status === 'pendiente' && r.expiresAt) return Number(r.expiresAt) > now;
+      return true;
+    });
+
+    if (!items.length){ empty.style.display='block'; return; }
+    empty.style.display='none';
+
+    items.forEach(d=>{
+      const id = d.code;
+      const expStr = fmtDate(d.expiresAt);
+      const chipCls = d.status==='pendiente' ? 'chip-warn' : (d.status==='canjeado' ? 'chip-ok' : 'chip-err');
+      const chipTxt = d.status;
+      const needsQR = d.status === 'pendiente';
+      const qrBoxId = `qr-hist-${id}`, dlId=`dl-${id}`, opId=`op-${id}`, cpId=`cp-${id}`;
+      const rewardLabel = d.rewardName || d.rewardId;
+
+      grid.insertAdjacentHTML('beforeend', `
+        <article class="hist-card">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong>${rewardLabel}</strong>
+            <span class="chip ${chipCls}">${chipTxt}</span>
+          </div>
+          <div>Coste: <b>${d.cost||0} pts</b></div>
+          <div>Expira: <b>${expStr || '-'}</b></div>
+          <div>Código: <b>${id}</b></div>
+
+          ${needsQR ? `
+            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+              <div id="${qrBoxId}" class="hist-qr"></div>
+              <div class="hist-actions">
+                <a id="${dlId}" class="btn-cta" href="#" style="display:none;">Descargar</a>
+                <button id="${opId}" class="btn-secondary" type="button" style="display:none;">Abrir</button>
+                <button id="${cpId}" class="btn-secondary" type="button" style="display:none;">Copiar QR</button>
+              </div>
+            </div>
+          ` : `<div class="ok">Canjeado.</div>`}
+        </article>
+      `);
+
+      if (needsQR && d.qrPayload){
+        const el = document.getElementById(qrBoxId);
+        el.innerHTML = '';
+        new QRCode(el, { text: d.qrPayload, width: 150, height: 150 });
+        setTimeout(()=>{
+          const dataURL = getQrDataURLFrom(el);
+          if (dataURL){
+            const a = document.getElementById(dlId);
+            const op= document.getElementById(opId);
+            const cp= document.getElementById(cpId);
+            const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
+            a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
+            op.style.display='inline-flex'; op.onclick = ()=> window.open(dataURL,'_blank','noopener');
+            cp.style.display='inline-flex'; cp.onclick = async ()=>{ try{ await navigator.clipboard.writeText(d.qrPayload); alert('Código QR (texto) copiado.'); }catch{ alert('No se pudo copiar.'); } };
+          }
+        }, 60);
+      }
+    });
+  }
+
+  function getQrDataURLFrom(containerEl){
+    if (!containerEl) return null;
+    const img = containerEl.querySelector('img');
+    if (img && img.src && img.src.startsWith('data:image')) return img.src;
+    const canvas = containerEl.querySelector('canvas');
+    if (canvas && canvas.toDataURL) return canvas.toDataURL('image/png');
+    return null;
+  }
+  function getMainQrDataURL(){ return getQrDataURLFrom(document.getElementById('qrcode')); }
+  function prepareMainQrDownloadUI(fileName, payloadText, codeStr){
+    const a = $('btnDownloadQR'), openBtn = $('btnOpenQR'), copyBtn = $('btnCopyPayload');
+    const dataURL = getMainQrDataURL();
+    if (!dataURL){ setTimeout(()=>prepareMainQrDownloadUI(fileName, payloadText, codeStr), 60); return; }
+    a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
+    openBtn.style.display='inline-flex'; openBtn.onclick = ()=> window.open(dataURL,'_blank','noopener');
+    copyBtn.style.display='inline-flex'; copyBtn.onclick = async ()=>{ try{ await navigator.clipboard.writeText(payloadText); alert('Texto del QR copiado.'); } catch{ alert('No se pudo copiar.'); } };
+
+    const copyCodeBtn = $('btnCopyCode');
+    copyCodeBtn.style.display = 'inline-flex';
+    copyCodeBtn.onclick = async ()=>{ try{ await navigator.clipboard.writeText(codeStr); alert('Código copiado.'); } catch{ alert('No se pudo copiar.'); } };
+  }
+
+  function generarCodigo(len = 10) {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let out = '';
+    for (let i=0; i<len; i++) out += alphabet[Math.floor(Math.random()*alphabet.length)];
+    return out;
+  }
+
+  async function canjearReward(reward) {
+    const user = auth.currentUser;
+    if (!user) return alert('Debes iniciar sesión.');
+
+    // Disponibles en UI
+    const disponibles = Number($('puntosActivos').dataset.value || 0);
+    if (disponibles < reward.cost) {
+      return alert(`Te faltan ${reward.cost - disponibles} puntos para canjear ${reward.name}.`);
+    }
+
+    // Reserva puntos atómica
+    const ok = await db.ref(`users/${user.uid}/points`).transaction(curr => {
+      const prev = Number(curr)||0; if (prev < reward.cost) return; return prev - reward.cost;
+    });
+    if (!ok.committed) { alert('No fue posible reservar puntos. Intenta de nuevo.'); return; }
+
+    // Crea redeem + espejo (pendiente)
+    const code = generarCodigo(10);
+    const expiresAt = Date.now() + 3*24*60*60*1000; // 3 días
+    const payloadObj = { v:1, brand:"Applebee's", uid:user.uid, code, rewardId:reward.id, cost:reward.cost, exp:expiresAt };
+    const payload = JSON.stringify(payloadObj);
+
+    const updates = {};
+    updates[`/redeems/${code}`] = {
+      code, userId:user.uid, rewardId:reward.id, cost:reward.cost,
+      status:'pending', createdAt:Date.now(), expiresAt
+    };
+    updates[`/users/${user.uid}/redemptions/${code}`] = {
+      code, rewardId:reward.id, rewardName:reward.name, cost:reward.cost,
+      status:'pendiente', createdAt:Date.now(), expiresAt, qrPayload: payload
+    };
+
+    try {
+      await db.ref().update(updates);
+
+      // Mostrar QR + CÓDIGO
+      $('qrBox').style.display = 'block';
+      $('rewardName').textContent = reward.name;
+      $('rewardCost').textContent = String(reward.cost);
+      $('qrExpires').textContent = fmtDate(expiresAt);
+      $('codeText').textContent = code;
+
+      const qrEl = $('qrcode'); qrEl.innerHTML = '';
+      new QRCode(qrEl, { text: payload, width: 180, height: 180 });
+      const fileName = `cupon_${reward.id}_${code}.png`;
+      setTimeout(()=> prepareMainQrDownloadUI(fileName, payload, code), 60);
+      $('qrBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+      // Si falla, devolver puntos
+      await db.ref(`users/${user.uid}/points`).transaction(curr => (Number(curr)||0) + reward.cost);
+      console.error(e);
+      alert('No se pudo crear el canje. Intenta de nuevo.');
+    }
+  }
+
+  auth.onAuthStateChanged((user)=>{
+    if(!user){ location.href='index.html'; return; }
+    $('btnLogout').onclick = async ()=>{ try{ await auth.signOut(); location.href='index.html'; }catch{} };
+
+    renderRewards();
+
+    db.ref(`users/${user.uid}/tickets`).on('value', (snap)=>{
+      const val = snap.val() || {};
+      _tickets = Object.values(val);
+      renderPoints();
+    });
+
+    db.ref(`users/${user.uid}/redemptions`).on('value', (snap)=>{
+      const val = snap.val() || {};
+      _redemps = Object.keys(val).map(k => ({ code:k, ...val[k] }));
+      renderHistory();
+      renderPoints();
+    });
+
+    $('rewardsGrid').addEventListener('click', (ev)=>{
+      const btn = ev.target.closest('button[data-reward]'); if(!btn) return;
+      const rewardId = btn.getAttribute('data-reward');
+      const r = REWARDS.find(x=>x.id===rewardId);
+      canjearReward(r);
+    });
+  });
+</script>
 </body>
 </html>
