@@ -37,7 +37,7 @@ body::before {
   background-color: #1c1c1c;
   border-radius: 16px;
   padding: 30px;
-  box-shadow: 0 0 20px rgba(255, 0, 0, 0.2);
+  box-shadow: 0 0 20px rgb(158, 3, 3);
   text-align: center;
 }
 
@@ -69,7 +69,7 @@ input::placeholder {
 button {
   width: 100%;
   padding: 12px;
-  background-color: #ff2f2f;
+  background-color: #e71e1e;
   color: white;
   border: none;
   border-radius: 8px;
@@ -79,7 +79,7 @@ button {
 }
 
 button:hover {
-  background-color: #1ac51a;
+  background-color: #26c211;
 }
 
 button.secondary {
