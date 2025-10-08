@@ -7,7 +7,7 @@
 
 /* Imagen de fondo + overlay */
 body {
-  background: url('20250825_1311_Logo\ Applebee\'s\ con\ Fondo\ Negro_remix_01k3ha4neweryvkf3pmfc7qtex.png') no-repeat center center fixed;
+  background: url('LogoApplebees.png') no-repeat center center fixed;
   background-size: cover;
   color: #fff;
   display: flex;
