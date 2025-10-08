@@ -48,7 +48,7 @@ body::before {
 
 h1 {
   margin-bottom: 20px;
-  color: #ff2f2f;
+  color: #f01b1b;
 }
 
 input {
@@ -79,7 +79,7 @@ button {
 }
 
 button:hover {
-  background-color: #e22323;
+  background-color: #1ac51a;
 }
 
 button.secondary {
@@ -97,7 +97,7 @@ button.secondary:hover {
 }
 
 .link a {
-  color: #ff2f2f;
+  color: #2dbb20;
   font-size: 14px;
   text-decoration: none;
 }
