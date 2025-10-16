@@ -8,13 +8,23 @@
 
   // ---------- Utilidades ----------
   // Normaliza un teléfono a formato E.164 MX -> +52 + últimos 10 dígitos
-  function normalizeMxPhone(input){
-    if (!input) return null;
-    const digits = String(input).replace(/\D+/g, '');
-    if (digits.length < 10) return null;
-    const last10 = digits.slice(-10);
-    return `+52${last10}`;
-  }
+  // Normaliza teléfono mexicano: permite 10 dígitos (ej. 6561246587),
+// o con +52, 52, o 521 al inicio. Siempre devuelve +52XXXXXXXXXX
+function normalizeMxPhone(input){
+  if (!input) return null;
+  let digits = String(input).replace(/\D+/g, ''); // quitar todo menos números
+
+  // Si el número empieza con 521 o 52 (WhatsApp u otros formatos)
+  if (digits.startsWith('521')) digits = digits.slice(3);
+  else if (digits.startsWith('52')) digits = digits.slice(2);
+
+  // Ahora deben quedar 10 dígitos
+  if (digits.length !== 10) return null;
+
+  // Devuelve en formato E.164 estándar
+  return `+52${digits}`;
+}
+
 
   // Lee el email desde RTDB: /login_alias/{phoneE164} -> { uid, email, createdAt }
   async function emailFromPhoneRTDB(phoneE164){
