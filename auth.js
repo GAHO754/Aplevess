@@ -2,7 +2,12 @@
 (function(){
   'use strict';
 
-  // Firebase inicializado desde firebase-config.js
+  // --- Verificación básica de Firebase ---
+  if (typeof firebase === 'undefined') {
+    console.error('[auth] Firebase no está cargado. Revisa tus <script> de Firebase.');
+    return;
+  }
+
   const auth = firebase.auth();
   const rtdb = firebase.database();
 
@@ -13,7 +18,7 @@
     if (!input) return null;
     let digits = String(input).replace(/\D+/g, ''); // quitar todo menos números
 
-    // Aceptar formatos 521XXXXXXXXXX o 52XXXXXXXXXX
+    // Aceptar formatos 521XXXXXXXXXX o 52XXXXXXXXXX (WhatsApp u otros)
     if (digits.startsWith('521')) digits = digits.slice(3);
     else if (digits.startsWith('52')) digits = digits.slice(2);
 
@@ -33,34 +38,32 @@
 
   // Guarda/actualiza el alias de login en RTDB
   async function upsertLoginAliasRTDB(phoneE164, uid, email){
-    const ref = rtdb.ref('login_alias').child(phoneE164);
-    const payload = {
+    await rtdb.ref('login_alias').child(phoneE164).set({
       uid,
       email,
       createdAt: firebase.database.ServerValue.TIMESTAMP
-    };
-    await ref.set(payload);
+    });
   }
 
   // Guarda el perfil del usuario en RTDB: /users/{uid}
   async function saveUserProfileRTDB(uid, profile){
-    const ref = rtdb.ref('users').child(uid);
-    const data = {
+    await rtdb.ref('users').child(uid).set({
       uid,
       name: profile.name || '',
       email: profile.email || '',
       phone: profile.phone || '',
       createdAt: firebase.database.ServerValue.TIMESTAMP
-    };
-    await ref.set(data);
+    });
   }
 
   // ---------- Login ----------
   async function login(){
     const inputEl = document.getElementById('emailOrPhone');
     const passEl  = document.getElementById('password');
-    const input   = (inputEl?.value || '').trim();
-    const password= passEl?.value || '';
+    const btn     = document.getElementById('btnLogin');
+
+    const input    = (inputEl?.value || '').trim();
+    const password = (passEl?.value || '');
 
     if (!input || !password) {
       alert('⚠️ Ingresa correo/teléfono y contraseña');
@@ -68,6 +71,8 @@
     }
 
     try {
+      if (btn) btn.disabled = true;
+
       if (input.includes('@')) {
         // Correo + password
         await auth.signInWithEmailAndPassword(input, password);
@@ -91,19 +96,28 @@
     } catch (err) {
       console.error(err);
       alert('❌ ' + (err?.message || 'Error al iniciar sesión'));
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
   // ---------- Registro (TELÉFONO OPCIONAL) ----------
   async function register(){
-    const name     = (document.getElementById('regName')?.value || '').trim();
-    const email    = (document.getElementById('regEmail')?.value || '').trim();
-    const phoneRaw = (document.getElementById('regPhone')?.value || '').trim();
-    const password = (document.getElementById('regPassword')?.value || '');
+    const nameEl  = document.getElementById('regName');
+    const emailEl = document.getElementById('regEmail');
+    const phoneEl = document.getElementById('regPhone');
+    const passEl  = document.getElementById('regPassword');
+    const btn     = document.getElementById('btnRegister');
 
-    if (!name)      return alert('❌ Debes ingresar tu nombre completo.');
-    if (!email)     return alert('❌ Debes ingresar un correo.');
-    if (!password)  return alert('❌ Debes ingresar una contraseña.');
+    const name     = (nameEl?.value || '').trim();
+    const email    = (emailEl?.value || '').trim();
+    const phoneRaw = (phoneEl?.value || '').trim();
+    const password = (passEl?.value || '');
+
+    if (!name)     return alert('❌ Debes ingresar tu nombre completo.');
+    if (!email)    return alert('❌ Debes ingresar un correo.');
+    if (!password) return alert('❌ Debes ingresar una contraseña.');
+    if (password.length < 6) return alert('❌ La contraseña debe tener al menos 6 caracteres.');
 
     // Teléfono opcional: si viene vacío, seguimos; si trae algo, validar
     let phoneE164 = '';
@@ -114,6 +128,8 @@
     }
 
     try {
+      if (btn) btn.disabled = true;
+
       // Crea el usuario con email/contraseña
       const cred = await auth.createUserWithEmailAndPassword(email, password);
       const user = cred.user;
@@ -133,7 +149,10 @@
       window.location.href = 'index.html';
     } catch (err) {
       console.error(err);
+      // Errores comunes: email ya en uso, contraseña débil, dominio no permitido
       alert('❌ ' + (err?.message || 'Error al registrar'));
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -165,14 +184,13 @@
   window.register = register;
   window.resetPassword = resetPassword;
 
-  // Enter para login
+  // ---------- Wiring (auto) ----------
   window.addEventListener('DOMContentLoaded', () => {
+    // Login page
     const btnLogin = document.getElementById('btnLogin');
     const lnkReset = document.getElementById('lnkReset');
-
     if (btnLogin) btnLogin.addEventListener('click', login);
     if (lnkReset) lnkReset.addEventListener('click', (e)=>{ e.preventDefault(); resetPassword(); });
-
     const emailOrPhone = document.getElementById('emailOrPhone');
     const password = document.getElementById('password');
     [emailOrPhone, password].forEach(el => {
@@ -181,5 +199,11 @@
         if (ev.key === 'Enter') login();
       });
     });
+
+    // Register page
+    const btnRegister = document.getElementById('btnRegister');
+    if (btnRegister) btnRegister.addEventListener('click', register);
   });
+
+  console.log('[auth] listo');
 })();
