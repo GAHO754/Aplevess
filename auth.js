@@ -7,24 +7,21 @@
   const rtdb = firebase.database();
 
   // ---------- Utilidades ----------
-  // Normaliza un teléfono a formato E.164 MX -> +52 + últimos 10 dígitos
   // Normaliza teléfono mexicano: permite 10 dígitos (ej. 6561246587),
-// o con +52, 52, o 521 al inicio. Siempre devuelve +52XXXXXXXXXX
-function normalizeMxPhone(input){
-  if (!input) return null;
-  let digits = String(input).replace(/\D+/g, ''); // quitar todo menos números
+  // o con +52, 52, o 521 al inicio. Siempre devuelve +52XXXXXXXXXX
+  function normalizeMxPhone(input){
+    if (!input) return null;
+    let digits = String(input).replace(/\D+/g, ''); // quitar todo menos números
 
-  // Si el número empieza con 521 o 52 (WhatsApp u otros formatos)
-  if (digits.startsWith('521')) digits = digits.slice(3);
-  else if (digits.startsWith('52')) digits = digits.slice(2);
+    // Aceptar formatos 521XXXXXXXXXX o 52XXXXXXXXXX
+    if (digits.startsWith('521')) digits = digits.slice(3);
+    else if (digits.startsWith('52')) digits = digits.slice(2);
 
-  // Ahora deben quedar 10 dígitos
-  if (digits.length !== 10) return null;
+    // Deben quedar exactamente 10 dígitos
+    if (digits.length !== 10) return null;
 
-  // Devuelve en formato E.164 estándar
-  return `+52${digits}`;
-}
-
+    return `+52${digits}`;
+  }
 
   // Lee el email desde RTDB: /login_alias/{phoneE164} -> { uid, email, createdAt }
   async function emailFromPhoneRTDB(phoneE164){
@@ -55,7 +52,6 @@ function normalizeMxPhone(input){
       phone: profile.phone || '',
       createdAt: firebase.database.ServerValue.TIMESTAMP
     };
-    // merge simple (set sobreescribe; si quieres merge fino, usa update)
     await ref.set(data);
   }
 
@@ -98,7 +94,7 @@ function normalizeMxPhone(input){
     }
   }
 
-  // ---------- Registro ----------
+  // ---------- Registro (TELÉFONO OPCIONAL) ----------
   async function register(){
     const name     = (document.getElementById('regName')?.value || '').trim();
     const email    = (document.getElementById('regEmail')?.value || '').trim();
@@ -107,11 +103,15 @@ function normalizeMxPhone(input){
 
     if (!name)      return alert('❌ Debes ingresar tu nombre completo.');
     if (!email)     return alert('❌ Debes ingresar un correo.');
-    if (!phoneRaw)  return alert('❌ Debes ingresar tu número de teléfono.');
     if (!password)  return alert('❌ Debes ingresar una contraseña.');
 
-    const phone = normalizeMxPhone(phoneRaw);
-    if (!phone) return alert('❌ Teléfono inválido. Usa 10 dígitos (MX) o formato +52XXXXXXXXXX.');
+    // Teléfono opcional: si viene vacío, seguimos; si trae algo, validar
+    let phoneE164 = '';
+    if (phoneRaw) {
+      const normalized = normalizeMxPhone(phoneRaw);
+      if (!normalized) return alert('❌ Teléfono inválido. Escribe 10 dígitos (ej. 6561246587).');
+      phoneE164 = normalized;
+    }
 
     try {
       // Crea el usuario con email/contraseña
@@ -122,10 +122,12 @@ function normalizeMxPhone(input){
       await user.updateProfile({ displayName: name });
 
       // Guarda perfil en RTDB
-      await saveUserProfileRTDB(user.uid, { name, email, phone });
+      await saveUserProfileRTDB(user.uid, { name, email, phone: phoneE164 });
 
-      // Crea/actualiza alias en RTDB para login por teléfono
-      await upsertLoginAliasRTDB(phone, user.uid, email);
+      // Si capturaron teléfono, crear/actualizar alias en RTDB
+      if (phoneE164) {
+        await upsertLoginAliasRTDB(phoneE164, user.uid, email);
+      }
 
       alert(`✅ ¡Bienvenido, ${name}! Cuenta creada correctamente.`);
       window.location.href = 'index.html';
