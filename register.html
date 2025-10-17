@@ -16,7 +16,8 @@
       <input type="email" id="regEmail" placeholder="Correo electrónico" autocomplete="email" />
       <input type="tel" id="regPhone" placeholder="Teléfono (10 dígitos, opcional)" inputmode="numeric" />
       <input type="password" id="regPassword" placeholder="Contraseña" autocomplete="new-password" />
-      <button onclick="register()">Crear Cuenta</button>
+      <!-- 👇 SIN onclick -->
+      <button id="btnRegister">Crear Cuenta</button>
 
       <p class="link">
         ¿Ya tienes cuenta? <a href="index.html">Inicia sesión aquí</a>
@@ -26,11 +27,9 @@
 
   <!-- Firebase (compat) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-
-  <!-- Tu config e implementación -->
-  <script src="firebase-config.js"></script>
-  <script src="auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="auth.js"></script>
 </body>
 </html>
