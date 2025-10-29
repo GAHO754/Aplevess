@@ -82,6 +82,7 @@
     .qr-fullscreen__img {
       max-width:92vw; max-height:80vh; background:#fff; border-radius:12px; padding:14px;
       box-shadow: 0 0 30px rgba(240,53,53,.45);
+      display:flex; align-items:center; justify-content:center;
     }
     .qr-fullscreen__close {
       position:absolute; top:20px; right:20px;
@@ -149,7 +150,7 @@
   <!-- Modal QR grande (para principal e historial) -->
   <div id="qrFullscreen" class="qr-fullscreen" aria-hidden="true">
     <button id="qrFsClose" class="qr-fullscreen__close" type="button">Cerrar</button>
-    <img id="qrFsImg" class="qr-fullscreen__img" alt="Cupón QR">
+    <div id="qrFsBox" class="qr-fullscreen__img"></div>
   </div>
 
   <script>
@@ -167,8 +168,8 @@
   // Catálogo de recompensas
   const REWARDS = [
     { id:'limonada',    name:'Limonada 16 oz',       cost:100 },
-    { id:'Ensalada cesar',       name:'Ensalada Cesar',         cost:250 },
-    { id:'Chiken Burger', name:'Hamburguesa de pollo', cost:320 },
+    { id:'Ensalada cesar', name:'Ensalada Cesar',    cost:250 },
+    { id:'Chiken Burger',  name:'Hamburguesa de pollo', cost:320 },
     { id:'hamburguesa', name:'Hamburguesa sencilla', cost:300 },
     { id:'brownie',     name:'Brownie con helado',   cost:450 },
     { id:'combo-kids',  name:'Combo infantil',       cost:600 },
@@ -192,7 +193,7 @@
   let _pointsNode = 0;   // users/{uid}/points (número)
   let _syncedOnce = false;
 
-  // ====== Utilidades QR fullscreen ======
+  // ====== Utilidades (dataURL para descargar si hay canvas/img) ======
   function getDataURLFrom(el){
     if (!el) return null;
     const img = el.querySelector('img');
@@ -201,20 +202,28 @@
     if (canvas && canvas.toDataURL) return canvas.toDataURL('image/png');
     return null;
   }
-  function openQrFullscreenWithDataURL(dataURL){
-    if(!dataURL) return;
-    const modal = $('qrFullscreen');
-    const img   = $('qrFsImg');
-    img.src = dataURL;
-    modal.style.display = 'flex';
-    modal.setAttribute('aria-hidden','false');
-  }
+
+  // ====== Modal QR grande ======
   (function bindQrModal(){
     const modal = $('qrFullscreen');
     const btnClose = $('qrFsClose');
-    btnClose.onclick = ()=>{ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); };
+    btnClose.onclick = ()=>{ 
+      modal.style.display = 'none'; 
+      modal.setAttribute('aria-hidden','true');
+      const box = $('qrFsBox'); if (box) box.innerHTML = '';
+    };
     modal.addEventListener('click', (e)=>{ if(e.target===modal) btnClose.click(); });
   })();
+
+  function openQrFullscreenWithPayload(payload, size=720){
+    const modal = $('qrFullscreen');
+    const box   = $('qrFsBox');
+    if (!modal || !box) return;
+    box.innerHTML = '';
+    new QRCode(box, { text: payload, width: size, height: size });
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden','false');
+  }
 
   // ====== Cálculos y render ======
   function recalcAndRender() {
@@ -278,6 +287,7 @@
     }
   }
 
+  // Historial con “Ver QR grande” basado en payload
   function renderHistory(){
     const grid = $('histGrid'), empty = $('histEmpty');
     grid.innerHTML = '';
@@ -297,7 +307,7 @@
       const chipCls = (d.status==='pendiente') ? 'chip-warn' : (d.status==='canjeado' ? 'chip-ok' : 'chip-err');
       const chipTxt = d.status;
       const needsQR = d.status === 'pendiente';
-      const qrBoxId = `qr-hist-${id}`, dlId=`dl-${id}`, opId=`op-${id}`, cpId=`cp-${id}`, bigId=`big-${id}`;
+      const qrBoxId = `qr-hist-${id}`, dlId=`dl-${id}`, cpId=`cp-${id}`, bigId=`big-${id}`;
       const rewardLabel = d.rewardName || d.rewardId;
 
       grid.insertAdjacentHTML('beforeend', `
@@ -328,30 +338,47 @@
         el.innerHTML = '';
         new QRCode(el, { text: d.qrPayload, width: 180, height: 180 });
         setTimeout(()=>{
+          // dataURL (si hay canvas/img) — sirve para "Descargar"
           const dataURL = getDataURLFrom(el);
           const a = document.getElementById(dlId);
-          const op= document.getElementById(opId);
           const cp= document.getElementById(cpId);
           const big= document.getElementById(bigId);
+
           if (dataURL){
             const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
             a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
-            op.style.display='inline-flex'; op.onclick = ()=> window.open(dataURL,'_blank','noopener');
-            cp.style.display='inline-flex'; cp.onclick = async ()=>{ try{ await navigator.clipboard.writeText(d.qrPayload); alert('Código del QR copiado.'); }catch{ alert('No se pudo copiar.'); } };
-            big.onclick = ()=> openQrFullscreenWithDataURL(dataURL);
           }
+          cp.style.display='inline-flex';
+          cp.onclick = async ()=>{ 
+            try{ await navigator.clipboard.writeText(d.qrPayload); alert('Código del QR copiado.'); }
+            catch{ alert('No se pudo copiar.'); }
+          };
+          big.onclick = ()=> openQrFullscreenWithPayload(d.qrPayload); // SIEMPRE funciona
         }, 60);
       }
     });
   }
 
+  // ====== QR principal ======
+  let _lastMainQrPayload = null;
+
   function prepareMainQrDownloadUI(fileName, payloadText){
     const a = $('btnDownloadQR'), openBtn = $('btnOpenQR'), copyBtn = $('btnCopyPayload');
+    _lastMainQrPayload = payloadText;
+
+    // dataURL solo si existe canvas/img (para "Descargar")
     const dataURL = getDataURLFrom(document.getElementById('qrcode'));
-    if (!dataURL){ setTimeout(()=>prepareMainQrDownloadUI(fileName, payloadText), 60); return; }
-    a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
-    openBtn.onclick = ()=> openQrFullscreenWithDataURL(dataURL);
-    copyBtn.onclick = async ()=>{ try{ await navigator.clipboard.writeText(payloadText); alert('Código del QR copiado.'); } catch{ alert('No se pudo copiar.'); } };
+    if (dataURL){
+      a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
+    } else {
+      a.style.display='none';
+    }
+
+    openBtn.onclick = ()=> openQrFullscreenWithPayload(_lastMainQrPayload);
+    copyBtn.onclick = async ()=>{ 
+      try{ await navigator.clipboard.writeText(payloadText); alert('Código del QR copiado.'); } 
+      catch{ alert('No se pudo copiar.'); } 
+    };
   }
 
   function generarCodigo(len = 10) {
@@ -466,6 +493,3 @@
   </script>
 </body>
 </html>
-
-
-
