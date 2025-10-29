@@ -326,6 +326,7 @@
                 <button id="${bigId}" class="btn-cta" type="button">Ver QR grande</button>
                 <a id="${dlId}" class="btn-cta" href="#" style="display:none;">Descargar</a>
               </div>
+
             </div>
             <div style="font-size:12px;opacity:.85">Código: <b style="font-family:monospace">${d.code}</b></div>
           ` : `<div class="ok">Canjeado.</div>`}
@@ -337,23 +338,19 @@
         el.innerHTML = '';
         new QRCode(el, { text: d.qrPayload, width: 180, height: 180 });
         setTimeout(()=>{
-          // dataURL (si hay canvas/img) — sirve para "Descargar"
-          const dataURL = getDataURLFrom(el);
-          const a = document.getElementById(dlId);
-          const cp= document.getElementById(cpId);
-          const big= document.getElementById(bigId);
+  const dataURL = getDataURLFrom(el);
+  const a = document.getElementById(dlId);
+  const big = document.getElementById(bigId);
 
-          if (dataURL){
-            const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
-            a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
-          }
-          cp.style.display='inline-flex';
-          cp.onclick = async ()=>{ 
-            try{ await navigator.clipboard.writeText(d.qrPayload); alert('Código del QR copiado.'); }
-            catch{ alert('No se pudo copiar.'); }
-          };
-          big.onclick = ()=> openQrFullscreenWithPayload(d.qrPayload); // SIEMPRE funciona
-        }, 60);
+  if (dataURL){
+    const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
+    a.href = dataURL;
+    a.setAttribute('download', fileName);
+    a.style.display='inline-flex';
+  }
+  big.onclick = ()=> openQrFullscreenWithPayload(d.qrPayload); // sigue funcionando igual
+}, 60);
+
       }
     });
   }
