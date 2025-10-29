@@ -39,20 +39,19 @@
     .reward-card .btn-cta { align-self:flex-start; }
     .reward-card a, .reward-card button { text-decoration:none; }
 
+    /* QR principal (más grande) */
     .qr-box{ display:none; margin-top:20px; padding:16px;
       background: rgba(25,25,25,.7); border:1px solid rgba(255,255,255,.08);
       border-radius:16px; }
     .qr-row{ display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
-
-    /* QR principal más grande pero responsive */
     #qrcode{ width:320px; height:320px; background:#fff; padding:8px; border-radius:8px; }
     @media (max-width:600px){
       #qrcode{ width:260px; height:260px; }
     }
-
     .qr-info small{ opacity:.85; }
     .qr-actions{ margin-top: 14px; display:flex; gap:10px; flex-wrap:wrap; }
 
+    /* Historial */
     .hist { margin-top: 26px; }
     .hist-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
     .hist-card {
@@ -72,27 +71,29 @@
     .link-back--pill { color:#fff; background:#f03535; border:2px solid #f03535; padding:7px 14px; border-radius:10px; font-weight:700; text-decoration:none; }
     .top-bar a, .top-bar a:link, .top-bar a:visited, .top-bar a:hover, .top-bar a:focus { text-decoration:none!important; border-bottom:none!important; box-shadow:none!important; background-image:none!important; }
 
-    /* ===== Modal QR responsive ===== */
+    /* Modal responsivo del QR */
     .qr-fullscreen {
       display:none; position:fixed; inset:0; z-index:9999;
       background: rgba(0,0,0,.92); backdrop-filter: blur(2px);
       align-items:center; justify-content:center; padding:20px;
     }
-    .qr-fullscreen__inner{
-      display:flex; flex-direction:column; align-items:center; gap:16px;
-      max-width: 92vw; max-height: 86vh;
+    .qr-fullscreen__img {
+      max-width:92vw;           /* ancho máximo relativo a la pantalla */
+      max-height:82vh;          /* alto máximo relativo a la pantalla */
+      width:auto; height:auto;  /* que mantenga proporción */
+      background:#fff; border-radius:12px; padding:14px;
+      box-shadow: 0 0 30px rgba(240,53,53,.45);
+      display:block;
     }
     .qr-fullscreen__close {
       position:absolute; top:20px; right:20px;
       background:#f03535; color:#fff; border:0; border-radius:10px;
       padding:10px 16px; font-weight:700; cursor:pointer;
     }
-    /* Contenedor donde re-renderizamos el QR */
-    #qrFsBox{
-      display:block;
-      /* el tamaño visual lo controlamos vía style en JS para adaptarse a la pantalla */
+    .qr-fullscreen__hint {
+      position:absolute; bottom:22px; left:50%; transform:translateX(-50%);
+      color:#fff; opacity:.8; font-size:14px; text-align:center;
     }
-    .qr-hint { color:#fff; opacity:.8; font-size:13px; text-align:center; }
   </style>
 </head>
 <body class="bg-animated">
@@ -150,13 +151,11 @@
     </section>
   </main>
 
-  <!-- ===== Modal QR grande y responsivo ===== -->
+  <!-- Modal QR grande -->
   <div id="qrFullscreen" class="qr-fullscreen" aria-hidden="true">
     <button id="qrFsClose" class="qr-fullscreen__close" type="button">Cerrar</button>
-    <div class="qr-fullscreen__inner">
-      <div id="qrFsBox" aria-label="QR en tamaño adaptativo"></div>
-      <div class="qr-hint">Acerca o aleja la pantalla; el QR se adapta a tu dispositivo.</div>
-    </div>
+    <img id="qrFsImg" class="qr-fullscreen__img" alt="Cupón QR">
+    <div class="qr-fullscreen__hint">Acerca o aleja la pantalla; el QR se adapta a tu dispositivo.</div>
   </div>
 
   <script>
@@ -173,12 +172,12 @@
 
   // Catálogo de recompensas
   const REWARDS = [
-    { id:'limonada',        name:'Limonada 16 oz',       cost:100 },
-    { id:'Ensalada cesar',  name:'Ensalada César',       cost:250 },
-    { id:'Chiken Burger',   name:'Hamburguesa de pollo', cost:320 },
-    { id:'hamburguesa',     name:'Hamburguesa sencilla', cost:300 },
-    { id:'brownie',         name:'Brownie con helado',   cost:450 },
-    { id:'combo-kids',      name:'Combo infantil',       cost:600 },
+    { id:'limonada',    name:'Limonada 16 oz',       cost:100 },
+    { id:'Ensalada cesar', name:'Ensalada Cesar',    cost:250 },
+    { id:'Chiken Burger',  name:'Hamburguesa de pollo', cost:320 },
+    { id:'hamburguesa', name:'Hamburguesa sencilla', cost:300 },
+    { id:'brownie',     name:'Brownie con helado',   cost:450 },
+    { id:'combo-kids',  name:'Combo infantil',       cost:600 },
   ];
   function renderRewards(){
     $('rewardsGrid').innerHTML = REWARDS.map(r => `
@@ -198,76 +197,37 @@
   let _redemps = [];     // redemptions espejo RTDB
   let _pointsNode = 0;   // users/{uid}/points (número)
   let _syncedOnce = false;
-  let _lastPayloadMain = ''; // para abrir en grande el QR principal
 
-  /* ====== Modal QR adaptativo ======
-     Re-renderiza el QR con un tamaño CSS que cabe en pantalla
-     y un tamaño de render mayor (según DPR) para nítidez. */
-  function openQrFullscreenWithPayload(payload){
-    if(!payload) return;
-    const modal = $('qrFullscreen');
-    const box   = $('qrFsBox');
-    if (!modal || !box) return;
-
-    // Limpia contenido previo
-    box.innerHTML = '';
-
-    // Tamaño visual máximo permitido (en CSS px)
-    const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
-    const vh = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
-
-    // Máximo 86% alto y 92% ancho del viewport, con tope en escritorio
-    const cssSize = Math.min(vw * 0.92, vh * 0.86, 640); // 640px tope en desktop
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5); // limitar DPR para no exagerar
-    const renderSize = Math.round(cssSize * dpr);
-
-    // Crear QR con render "grande"
-    const tmp = document.createElement('div');
-    new QRCode(tmp, { text: payload, width: renderSize, height: renderSize });
-
-    // Tomamos el canvas/img generado y lo escalamos a cssSize
-    const qrNode = tmp.querySelector('canvas, img');
-    if (qrNode){
-      qrNode.style.width  = cssSize + 'px';
-      qrNode.style.height = cssSize + 'px';
-      // Añadir borde y fondo para contraste
-      const wrapper = document.createElement('div');
-      wrapper.style.background = '#fff';
-      wrapper.style.borderRadius = '12px';
-      wrapper.style.padding = '14px';
-      wrapper.style.boxShadow = '0 0 30px rgba(240,53,53,.45)';
-      wrapper.appendChild(qrNode);
-      box.appendChild(wrapper);
+  // ====== Utilidades de QR ======
+  function getDataURLFrom(el){
+    if (!el) return null;
+    const img = el.querySelector('img');
+    if (img && img.src && img.src.startsWith('data:image')) return img.src;
+    const canvas = el.querySelector('canvas');
+    if (canvas && canvas.toDataURL) return canvas.toDataURL('image/png');
+    return null;
+  }
+  function openQrFullscreenFromContainer(containerEl){
+    const dataURL = getDataURLFrom(containerEl);
+    if (!dataURL) {
+      alert('Aún no está listo el QR. Intenta de nuevo en un momento.');
+      return;
     }
-
-    // Mostrar modal
+    const modal = $('qrFullscreen');
+    const img   = $('qrFsImg');
+    img.src = dataURL;            // se adapta con CSS (max-width/height)
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden','false');
-
-    // Al cambiar orientación / tamaño, re-render para seguir adaptado
-    const onResize = ()=>{
-      modal.style.display = 'none';
-      modal.setAttribute('aria-hidden','true');
-      window.removeEventListener('resize', onResize);
-      // reabrir inmediato con nuevo tamaño
-      setTimeout(()=> openQrFullscreenWithPayload(payload), 0);
-    };
-    window.addEventListener('resize', onResize, { once:true });
   }
   (function bindQrModal(){
     const modal = $('qrFullscreen');
     const btnClose = $('qrFsClose');
-    const close = ()=>{
-      modal.style.display='none';
-      modal.setAttribute('aria-hidden','true');
-    };
-    btnClose.onclick = close;
-    modal.addEventListener('click', (e)=>{ if(e.target===modal) close(); });
+    btnClose.onclick = ()=>{ modal.style.display='none'; modal.setAttribute('aria-hidden','true'); };
+    modal.addEventListener('click', (e)=>{ if(e.target===modal) btnClose.click(); });
   })();
 
   // ====== Cálculos y render ======
   function recalcAndRender() {
-    // 1) tabla
     const rows = [];
     let ptsTicketsActivos = 0;
     const proximos = [];
@@ -289,7 +249,6 @@
     });
     tbody.innerHTML = rows.length ? rows.join('') : `<tr><td colspan="3" class="warn">Sin puntos registrados.</td></tr>`;
 
-    // 2) gastos y reservas
     const spent = _redemps.filter(r => String(r.status).toLowerCase()==='canjeado')
                           .reduce((a,r)=> a + (Number(r.cost)||0), 0);
     const now = Date.now();
@@ -298,8 +257,6 @@
                              .reduce((a,r)=> a + (Number(r.cost)||0), 0);
 
     const calculatedAvailable = Math.max(0, ptsTicketsActivos - spent - reserved);
-
-    // 3) Mostrar el mayor entre calculado y /points
     const effectiveAvailable = Math.max(calculatedAvailable, Number(_pointsNode||0));
     const span = $('puntosActivos');
     span.textContent = String(effectiveAvailable);
@@ -312,7 +269,6 @@
       ? `Tienes ${reserved} pts reservados en cupones pendientes.`
       : '';
 
-    // 4) Backfill/sync a /points (una vez)
     const badge = $('syncBadge');
     if (!_syncedOnce && (Number(_pointsNode||0) < calculatedAvailable)) {
       const user = auth.currentUser;
@@ -320,7 +276,7 @@
         _syncedOnce = true;
         db.ref(`users/${user.uid}/points`).set(calculatedAvailable)
           .then(()=>{ _pointsNode = calculatedAvailable; badge.style.display='inline'; })
-          .catch(()=>{ /* silencioso */ });
+          .catch(()=>{});
       }
     } else {
       badge.style.display='none';
@@ -375,39 +331,28 @@
         const el = document.getElementById(qrBoxId);
         el.innerHTML = '';
         new QRCode(el, { text: d.qrPayload, width: 180, height: 180 });
+
+        // Botones que dependen del QR ya renderizado
         setTimeout(()=>{
-          // Descargar como imagen si quieres
           const dataURL = getDataURLFrom(el);
-          const a   = document.getElementById(dlId);
-          const big = document.getElementById(bigId);
+          const a = document.getElementById(dlId);
+          const big= document.getElementById(bigId);
           if (dataURL){
             const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
             a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
           }
-          // Abrir modal responsivo re-renderizando desde el payload
-          big.onclick = ()=> openQrFullscreenWithPayload(d.qrPayload);
-        }, 60);
+          // Para robustez: al abrir grande se vuelve a leer del contenedor (por si aún no estaba listo)
+          big.onclick = ()=> openQrFullscreenFromContainer(el);
+        }, 80);
       }
     });
   }
 
-  function getDataURLFrom(containerEl){
-    if (!containerEl) return null;
-    const img = containerEl.querySelector('img');
-    if (img && img.src && img.src.startsWith('data:image')) return img.src;
-    const canvas = containerEl.querySelector('canvas');
-    if (canvas && canvas.toDataURL) return canvas.toDataURL('image/png');
-    return null;
-  }
-
-  function prepareMainQrDownloadUI(fileName, payloadText){
-    const a = $('btnDownloadQR'), openBtn = $('btnOpenQR');
-    // descarga directa del QR principal
+  function prepareMainQrDownloadUI(fileName){
+    const a = $('btnDownloadQR');
     const dataURL = getDataURLFrom(document.getElementById('qrcode'));
-    if (!dataURL){ setTimeout(()=>prepareMainQrDownloadUI(fileName, payloadText), 60); return; }
+    if (!dataURL){ setTimeout(()=>prepareMainQrDownloadUI(fileName), 60); return; }
     a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
-    // abrir modal responsivo re-renderizando con payload para nitidez
-    openBtn.onclick = ()=> openQrFullscreenWithPayload(payloadText);
   }
 
   function generarCodigo(len = 10) {
@@ -421,21 +366,18 @@
     const user = auth.currentUser;
     if (!user) return alert('Debes iniciar sesión.');
 
-    // Disponibles en UI (ya es el mayor entre calculado y /points)
     const disponibles = Number($('puntosActivos').dataset.value || 0);
     if (disponibles < reward.cost) {
       return alert(`Te faltan ${reward.cost - disponibles} puntos para canjear ${reward.name}.`);
     }
 
-    // Reserva puntos atómica en /users/{uid}/points
     const tx = await db.ref(`users/${user.uid}/points`).transaction(curr => {
       const prev = Number(curr)||0;
-      if (prev < reward.cost) return;   // aborta
+      if (prev < reward.cost) return;
       return prev - reward.cost;
     });
     if (!tx.committed) { alert('No fue posible reservar puntos. Intenta de nuevo.'); return; }
 
-    // Crea redeem + espejo (pendiente)
     const code = generarCodigo(10);
     const expiresAt = Date.now() + 3*24*60*60*1000; // 3 días
     const payloadObj = { v:1, brand:"Applebee's", uid:user.uid, code, rewardId:reward.id, cost:reward.cost, exp:expiresAt };
@@ -454,7 +396,6 @@
     try {
       await db.ref().update(updates);
 
-      // Mostrar QR principal y refrescar visual
       $('qrBox').style.display = 'block';
       $('rewardName').textContent = reward.name;
       $('rewardCost').textContent = String(reward.cost);
@@ -463,13 +404,15 @@
 
       const qrEl = $('qrcode'); qrEl.innerHTML = '';
       new QRCode(qrEl, { text: payload, width: 320, height: 320 });
-      const fileName = `cupon_${reward.id}_${code}.png`;
-      setTimeout(()=> prepareMainQrDownloadUI(fileName, payload), 60);
-      $('qrBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-      _lastPayloadMain = payload;
+      const fileName = `cupon_${reward.id}_${code}.png`;
+      setTimeout(()=> prepareMainQrDownloadUI(fileName), 80);
+
+      // Abrir grande (principal): recalcula en el momento
+      $('btnOpenQR').onclick = ()=> openQrFullscreenFromContainer(qrEl);
+
+      $('qrBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
-      // rollback puntos si falla
       await db.ref(`users/${user.uid}/points`).transaction(curr => (Number(curr)||0) + reward.cost);
       console.error(e);
       alert('No se pudo crear el canje. Intenta de nuevo.');
@@ -485,13 +428,11 @@
     if(!user){ location.href='index.html'; return; }
     renderRewards();
 
-    // 1) Puntos numéricos
     db.ref(`users/${user.uid}/points`).on('value', (snap)=>{
       _pointsNode = Number(snap.val()||0);
       recalcAndRender();
-    }, (err)=> console.error('Error leyendo /points:', err));
+    });
 
-    // 2) Tickets
     db.ref(`users/${user.uid}/tickets`).on('value', (snap)=>{
       const val = snap.val() || {};
       _tickets = Object.values(val).map(t => ({
@@ -503,17 +444,15 @@
       }));
       _tickets.sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
       recalcAndRender();
-    }, (err)=> console.error('Error leyendo /tickets:', err));
+    });
 
-    // 3) Redemptions espejo
     db.ref(`users/${user.uid}/redemptions`).on('value', (snap)=>{
       const val = snap.val() || {};
       _redemps = Object.keys(val).map(k => ({ code:k, ...val[k] }));
       renderHistory();
       recalcAndRender();
-    }, (err)=> console.error('Error leyendo /redemptions:', err));
+    });
 
-    // 4) Clicks en catálogo
     $('rewardsGrid').addEventListener('click', (ev)=>{
       const btn = ev.target.closest('button[data-reward]'); if(!btn) return;
       const rewardId = btn.getAttribute('data-reward');
