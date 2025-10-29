@@ -44,7 +44,7 @@
       border-radius:16px; }
     .qr-row{ display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
 
-    /* tamaño base del QR principal (más grande) */
+    /* QR principal más grande pero responsive */
     #qrcode{ width:320px; height:320px; background:#fff; padding:8px; border-radius:8px; }
     @media (max-width:600px){
       #qrcode{ width:260px; height:260px; }
@@ -64,7 +64,6 @@
     .chip-warn{ background: rgba(255,223,170,.15); color:#ffdfaa; border:1px solid rgba(255,223,170,.35); }
     .chip-err{  background: rgba(255,154,154,.15); color:#ff9a9a; border:1px solid rgba(255,154,154,.35); }
 
-    /* mini QR en historial, con botón para ver grande */
     .hist-qr-wrap{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     .hist-qr { width:180px; height:180px; background:#fff; padding:6px; border-radius:8px; }
     @media (max-width:600px){ .hist-qr{ width:160px; height:160px; } }
@@ -73,22 +72,27 @@
     .link-back--pill { color:#fff; background:#f03535; border:2px solid #f03535; padding:7px 14px; border-radius:10px; font-weight:700; text-decoration:none; }
     .top-bar a, .top-bar a:link, .top-bar a:visited, .top-bar a:hover, .top-bar a:focus { text-decoration:none!important; border-bottom:none!important; box-shadow:none!important; background-image:none!important; }
 
-    /* Modal fullscreen para ver cualquier QR en grande */
+    /* ===== Modal QR responsive ===== */
     .qr-fullscreen {
       display:none; position:fixed; inset:0; z-index:9999;
       background: rgba(0,0,0,.92); backdrop-filter: blur(2px);
       align-items:center; justify-content:center; padding:20px;
     }
-    .qr-fullscreen__img {
-      max-width:92vw; max-height:80vh; background:#fff; border-radius:12px; padding:14px;
-      box-shadow: 0 0 30px rgba(240,53,53,.45);
-      display:flex; align-items:center; justify-content:center;
+    .qr-fullscreen__inner{
+      display:flex; flex-direction:column; align-items:center; gap:16px;
+      max-width: 92vw; max-height: 86vh;
     }
     .qr-fullscreen__close {
       position:absolute; top:20px; right:20px;
       background:#f03535; color:#fff; border:0; border-radius:10px;
       padding:10px 16px; font-weight:700; cursor:pointer;
     }
+    /* Contenedor donde re-renderizamos el QR */
+    #qrFsBox{
+      display:block;
+      /* el tamaño visual lo controlamos vía style en JS para adaptarse a la pantalla */
+    }
+    .qr-hint { color:#fff; opacity:.8; font-size:13px; text-align:center; }
   </style>
 </head>
 <body class="bg-animated">
@@ -133,7 +137,6 @@
           <div class="qr-actions">
             <button id="btnOpenQR" class="btn-cta" type="button">Ver QR grande</button>
             <a id="btnDownloadQR" class="btn-cta" href="#" style="display:none;">Descargar</a>
-            <button id="btnCopyPayload" class="btn-secondary" type="button">Copiar código</button>
           </div>
           <small>Este QR es de un solo uso. Un gerente lo escaneará para validar y canjear.</small>
         </div>
@@ -147,10 +150,13 @@
     </section>
   </main>
 
-  <!-- Modal QR grande (para principal e historial) -->
+  <!-- ===== Modal QR grande y responsivo ===== -->
   <div id="qrFullscreen" class="qr-fullscreen" aria-hidden="true">
     <button id="qrFsClose" class="qr-fullscreen__close" type="button">Cerrar</button>
-    <div id="qrFsBox" class="qr-fullscreen__img"></div>
+    <div class="qr-fullscreen__inner">
+      <div id="qrFsBox" aria-label="QR en tamaño adaptativo"></div>
+      <div class="qr-hint">Acerca o aleja la pantalla; el QR se adapta a tu dispositivo.</div>
+    </div>
   </div>
 
   <script>
@@ -167,12 +173,12 @@
 
   // Catálogo de recompensas
   const REWARDS = [
-    { id:'limonada',    name:'Limonada 16 oz',       cost:100 },
-    { id:'Ensalada cesar', name:'Ensalada Cesar',    cost:250 },
-    { id:'Chiken Burger',  name:'Hamburguesa de pollo', cost:320 },
-    { id:'hamburguesa', name:'Hamburguesa sencilla', cost:300 },
-    { id:'brownie',     name:'Brownie con helado',   cost:450 },
-    { id:'combo-kids',  name:'Combo infantil',       cost:600 },
+    { id:'limonada',        name:'Limonada 16 oz',       cost:100 },
+    { id:'Ensalada cesar',  name:'Ensalada César',       cost:250 },
+    { id:'Chiken Burger',   name:'Hamburguesa de pollo', cost:320 },
+    { id:'hamburguesa',     name:'Hamburguesa sencilla', cost:300 },
+    { id:'brownie',         name:'Brownie con helado',   cost:450 },
+    { id:'combo-kids',      name:'Combo infantil',       cost:600 },
   ];
   function renderRewards(){
     $('rewardsGrid').innerHTML = REWARDS.map(r => `
@@ -192,38 +198,72 @@
   let _redemps = [];     // redemptions espejo RTDB
   let _pointsNode = 0;   // users/{uid}/points (número)
   let _syncedOnce = false;
+  let _lastPayloadMain = ''; // para abrir en grande el QR principal
 
-  // ====== Utilidades (dataURL para descargar si hay canvas/img) ======
-  function getDataURLFrom(el){
-    if (!el) return null;
-    const img = el.querySelector('img');
-    if (img && img.src && img.src.startsWith('data:image')) return img.src;
-    const canvas = el.querySelector('canvas');
-    if (canvas && canvas.toDataURL) return canvas.toDataURL('image/png');
-    return null;
-  }
-
-  // ====== Modal QR grande ======
-  (function bindQrModal(){
-    const modal = $('qrFullscreen');
-    const btnClose = $('qrFsClose');
-    btnClose.onclick = ()=>{ 
-      modal.style.display = 'none'; 
-      modal.setAttribute('aria-hidden','true');
-      const box = $('qrFsBox'); if (box) box.innerHTML = '';
-    };
-    modal.addEventListener('click', (e)=>{ if(e.target===modal) btnClose.click(); });
-  })();
-
-  function openQrFullscreenWithPayload(payload, size=720){
+  /* ====== Modal QR adaptativo ======
+     Re-renderiza el QR con un tamaño CSS que cabe en pantalla
+     y un tamaño de render mayor (según DPR) para nítidez. */
+  function openQrFullscreenWithPayload(payload){
+    if(!payload) return;
     const modal = $('qrFullscreen');
     const box   = $('qrFsBox');
     if (!modal || !box) return;
+
+    // Limpia contenido previo
     box.innerHTML = '';
-    new QRCode(box, { text: payload, width: size, height: size });
+
+    // Tamaño visual máximo permitido (en CSS px)
+    const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+    const vh = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
+
+    // Máximo 86% alto y 92% ancho del viewport, con tope en escritorio
+    const cssSize = Math.min(vw * 0.92, vh * 0.86, 640); // 640px tope en desktop
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5); // limitar DPR para no exagerar
+    const renderSize = Math.round(cssSize * dpr);
+
+    // Crear QR con render "grande"
+    const tmp = document.createElement('div');
+    new QRCode(tmp, { text: payload, width: renderSize, height: renderSize });
+
+    // Tomamos el canvas/img generado y lo escalamos a cssSize
+    const qrNode = tmp.querySelector('canvas, img');
+    if (qrNode){
+      qrNode.style.width  = cssSize + 'px';
+      qrNode.style.height = cssSize + 'px';
+      // Añadir borde y fondo para contraste
+      const wrapper = document.createElement('div');
+      wrapper.style.background = '#fff';
+      wrapper.style.borderRadius = '12px';
+      wrapper.style.padding = '14px';
+      wrapper.style.boxShadow = '0 0 30px rgba(240,53,53,.45)';
+      wrapper.appendChild(qrNode);
+      box.appendChild(wrapper);
+    }
+
+    // Mostrar modal
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden','false');
+
+    // Al cambiar orientación / tamaño, re-render para seguir adaptado
+    const onResize = ()=>{
+      modal.style.display = 'none';
+      modal.setAttribute('aria-hidden','true');
+      window.removeEventListener('resize', onResize);
+      // reabrir inmediato con nuevo tamaño
+      setTimeout(()=> openQrFullscreenWithPayload(payload), 0);
+    };
+    window.addEventListener('resize', onResize, { once:true });
   }
+  (function bindQrModal(){
+    const modal = $('qrFullscreen');
+    const btnClose = $('qrFsClose');
+    const close = ()=>{
+      modal.style.display='none';
+      modal.setAttribute('aria-hidden','true');
+    };
+    btnClose.onclick = close;
+    modal.addEventListener('click', (e)=>{ if(e.target===modal) close(); });
+  })();
 
   // ====== Cálculos y render ======
   function recalcAndRender() {
@@ -259,7 +299,7 @@
 
     const calculatedAvailable = Math.max(0, ptsTicketsActivos - spent - reserved);
 
-    // 3) Mostrar el mayor entre calculado y /points (evita ver "0" por desincronía)
+    // 3) Mostrar el mayor entre calculado y /points
     const effectiveAvailable = Math.max(calculatedAvailable, Number(_pointsNode||0));
     const span = $('puntosActivos');
     span.textContent = String(effectiveAvailable);
@@ -287,7 +327,6 @@
     }
   }
 
-  // Historial con “Ver QR grande” basado en payload
   function renderHistory(){
     const grid = $('histGrid'), empty = $('histEmpty');
     grid.innerHTML = '';
@@ -307,7 +346,7 @@
       const chipCls = (d.status==='pendiente') ? 'chip-warn' : (d.status==='canjeado' ? 'chip-ok' : 'chip-err');
       const chipTxt = d.status;
       const needsQR = d.status === 'pendiente';
-      const qrBoxId = `qr-hist-${id}`, dlId=`dl-${id}`, cpId=`cp-${id}`, bigId=`big-${id}`;
+      const qrBoxId = `qr-hist-${id}`, dlId=`dl-${id}`, bigId=`big-${id}`;
       const rewardLabel = d.rewardName || d.rewardId;
 
       grid.insertAdjacentHTML('beforeend', `
@@ -326,7 +365,6 @@
                 <button id="${bigId}" class="btn-cta" type="button">Ver QR grande</button>
                 <a id="${dlId}" class="btn-cta" href="#" style="display:none;">Descargar</a>
               </div>
-
             </div>
             <div style="font-size:12px;opacity:.85">Código: <b style="font-family:monospace">${d.code}</b></div>
           ` : `<div class="ok">Canjeado.</div>`}
@@ -338,43 +376,38 @@
         el.innerHTML = '';
         new QRCode(el, { text: d.qrPayload, width: 180, height: 180 });
         setTimeout(()=>{
-  const dataURL = getDataURLFrom(el);
-  const a = document.getElementById(dlId);
-  const big = document.getElementById(bigId);
-
-  if (dataURL){
-    const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
-    a.href = dataURL;
-    a.setAttribute('download', fileName);
-    a.style.display='inline-flex';
-  }
-  big.onclick = ()=> openQrFullscreenWithPayload(d.qrPayload); // sigue funcionando igual
-}, 60);
-
+          // Descargar como imagen si quieres
+          const dataURL = getDataURLFrom(el);
+          const a   = document.getElementById(dlId);
+          const big = document.getElementById(bigId);
+          if (dataURL){
+            const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
+            a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
+          }
+          // Abrir modal responsivo re-renderizando desde el payload
+          big.onclick = ()=> openQrFullscreenWithPayload(d.qrPayload);
+        }, 60);
       }
     });
   }
 
-  // ====== QR principal ======
-  let _lastMainQrPayload = null;
+  function getDataURLFrom(containerEl){
+    if (!containerEl) return null;
+    const img = containerEl.querySelector('img');
+    if (img && img.src && img.src.startsWith('data:image')) return img.src;
+    const canvas = containerEl.querySelector('canvas');
+    if (canvas && canvas.toDataURL) return canvas.toDataURL('image/png');
+    return null;
+  }
 
   function prepareMainQrDownloadUI(fileName, payloadText){
-    const a = $('btnDownloadQR'), openBtn = $('btnOpenQR'), copyBtn = $('btnCopyPayload');
-    _lastMainQrPayload = payloadText;
-
-    // dataURL solo si existe canvas/img (para "Descargar")
+    const a = $('btnDownloadQR'), openBtn = $('btnOpenQR');
+    // descarga directa del QR principal
     const dataURL = getDataURLFrom(document.getElementById('qrcode'));
-    if (dataURL){
-      a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
-    } else {
-      a.style.display='none';
-    }
-
-    openBtn.onclick = ()=> openQrFullscreenWithPayload(_lastMainQrPayload);
-    copyBtn.onclick = async ()=>{ 
-      try{ await navigator.clipboard.writeText(payloadText); alert('Código del QR copiado.'); } 
-      catch{ alert('No se pudo copiar.'); } 
-    };
+    if (!dataURL){ setTimeout(()=>prepareMainQrDownloadUI(fileName, payloadText), 60); return; }
+    a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
+    // abrir modal responsivo re-renderizando con payload para nitidez
+    openBtn.onclick = ()=> openQrFullscreenWithPayload(payloadText);
   }
 
   function generarCodigo(len = 10) {
@@ -421,7 +454,7 @@
     try {
       await db.ref().update(updates);
 
-      // Mostrar QR principal (tamaño grande) y refrescar visual
+      // Mostrar QR principal y refrescar visual
       $('qrBox').style.display = 'block';
       $('rewardName').textContent = reward.name;
       $('rewardCost').textContent = String(reward.cost);
@@ -433,6 +466,8 @@
       const fileName = `cupon_${reward.id}_${code}.png`;
       setTimeout(()=> prepareMainQrDownloadUI(fileName, payload), 60);
       $('qrBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      _lastPayloadMain = payload;
     } catch (e) {
       // rollback puntos si falla
       await db.ref(`users/${user.uid}/points`).transaction(curr => (Number(curr)||0) + reward.cost);
@@ -454,7 +489,7 @@
     db.ref(`users/${user.uid}/points`).on('value', (snap)=>{
       _pointsNode = Number(snap.val()||0);
       recalcAndRender();
-    });
+    }, (err)=> console.error('Error leyendo /points:', err));
 
     // 2) Tickets
     db.ref(`users/${user.uid}/tickets`).on('value', (snap)=>{
@@ -468,7 +503,7 @@
       }));
       _tickets.sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
       recalcAndRender();
-    });
+    }, (err)=> console.error('Error leyendo /tickets:', err));
 
     // 3) Redemptions espejo
     db.ref(`users/${user.uid}/redemptions`).on('value', (snap)=>{
@@ -476,7 +511,7 @@
       _redemps = Object.keys(val).map(k => ({ code:k, ...val[k] }));
       renderHistory();
       recalcAndRender();
-    });
+    }, (err)=> console.error('Error leyendo /redemptions:', err));
 
     // 4) Clicks en catálogo
     $('rewardsGrid').addEventListener('click', (ev)=>{
