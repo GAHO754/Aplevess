@@ -1,4 +1,8 @@
-/* ===== Depuración opcional ===== */
+/* ============================================
+   ocr.js — OCR robusto para tickets Applebee’s
+   ============================================ */
+
+/* ===== Depuración opcional (muestra en <pre id="ocrDebug">) ===== */
 const DBG = { lines:[], notes:[] };
 function note(s){ try{ DBG.notes.push(String(s)); }catch{} }
 function dump(){
@@ -44,24 +48,6 @@ function normalizeNum(raw){
   return Number.isFinite(n) ? +(n.toFixed(2)) : null;
 }
 
-function endsWithPrice(line){
-  const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*$/);
-  if(!m) return null;
-  const price = normalizeNum(m[1]);
-  if(price == null) return null;
-  const namePart = line.replace(m[0], '').trim();
-  return { namePart, price };
-}
-
-function looksTextualName(s){
-  if(!s) return false;
-  if (/^\d+([x×]\d+)?$/.test(s)) return false; // pura cantidad
-  const low = s.toLowerCase();
-  if (/\b(sub-?total|subtotal|iva|impuesto|propina|servicio|service|descuento|cover|cupon|cambio|cancel|anulado|cliente|clientes|mesa|mesero|visa|master|amex|tarjeta|efectivo|cash|pago|payment|saldo|orden|order|nota|reimpres|autoriz)/.test(low)) return false;
-  if (/\b(cp|c\.p\.|col|av|avenida|calle|domicilio|chihuahua|tecnologico)\b/i.test(low)) return false;
-  return /[a-záéíóúñ]/i.test(s) && s.length >= 3;
-}
-
 function toISODateFromText(text){
   const m = String(text||'').match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
   if(!m) return '';
@@ -70,7 +56,47 @@ function toISODateFromText(text){
   return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
 }
 
-/* ===== Ventana de productos ===== */
+/* ===== Diccionario mínimo de productos/sinónimos (mejora look de “nombre item”) ===== */
+const PRODUCT_HINTS = [
+  'burger','hamburguesa','cheeseburger','queso','bacon','pollo','chicken','chiken','nuggets',
+  'ribs','costillas','steak','sirloin','ribeye','new york','arrachera',
+  'salmon','salmón','tilapia','pescado','shrimp','camarones','fish','chips',
+  'fajita','tacos','quesadilla','enchilada','burrito',
+  'wings','alitas','boneless','sampler','mozzarella','nachos','dip','onion','aros','cebolla',
+  'ensalada','salad','sopa','soup',
+  'pasta','alfredo','fettuccine','parm','pomodoro','lasagna','lasaña',
+  'postre','dessert','brownie','cheesecake','blondie','helado','ice cream','pie','pastel',
+  'margarita','mojito','martini','paloma','aperol','spritz',
+  'cerveza','beer','vino','mezcal','tequila','whisky','ron','vodka',
+  'refresco','soda','coca','pepsi','sprite','fanta','limonada','agua','jugo','iced tea','malteada','shake','smoothie',
+  'coffee','cafe','latte','espresso','te','té','chocolate','kids','combo'
+];
+
+const META_RX =
+  /\b(sub-?total|subtotal|iva|impuesto|impt|imp\.?t|total|propina|servicio|service|descuento|cover|cup[oó]n|cupon|cambio|redondeo|cancel|anulado|reimpres|cliente|clientes|mesa|mesero|visa|master|amex|tarjeta|efectivo|cash|pago|payment|saldo|orden|order|nota|autoriz)\b/i;
+const ADDRESS_RX =
+  /\b(cp|c\.p\.|col|col\.|cd|av|avenida|calle|chih|chihuahua|tecnologico|domicilio)\b/i;
+
+function looksTextualName(s){
+  if(!s) return false;
+  if (/^\d+([x×]\d+)?$/.test(s)) return false; // pura cantidad
+  const low = s.toLowerCase();
+  if (META_RX.test(low) || ADDRESS_RX.test(low)) return false;
+  if (PRODUCT_HINTS.some(w=> low.includes(w))) return true;
+  return /[a-záéíóúñ]/i.test(s) && s.length >= 3;
+}
+
+/* ===== Detección de precio al final ===== */
+function endsWithPrice(line){
+  const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*$/);
+  if(!m) return null;
+  const price = normalizeNum(m[1]);
+  if(price == null) return null;
+  const left = line.replace(m[0], '').trim();
+  return { namePart:left, price };
+}
+
+/* ===== Ventana de productos (amplia) ===== */
 function findProductsWindow(lines){
   const start = lines.findIndex(l=>{
     const end = endsWithPrice(l); if(!end) return false;
@@ -81,61 +107,118 @@ function findProductsWindow(lines){
   });
   if (start<0) return {start:-1,end:-1};
 
+  // Avanza hasta antes de totales
   let end = start;
   for(let i=start;i<lines.length;i++){
-    const l = lines[i].toLowerCase();
-    if (/sub-?total|iva|impuesto|^total\s*:?\s*$/i.test(l)) { end = i-1; break; }
+    const L = lines[i].toLowerCase();
+    if (/sub-?total|iva|impuesto|^total\s*:?\s*$/i.test(L)) { end = i-1; break; }
     end = i;
   }
   note(`Ventana productos ${start}..${end}`);
   return {start,end};
 }
 
-function parseItems(lines, win){
-  if (win.start<0 || win.end<0 || win.end<win.start) return [];
+/* ===== Fusión de líneas partidas (nombre en una línea y precio en la siguiente) ===== */
+function mergeWrappedLines(lines, win){
+  if (win.start<0) return [];
   const out = [];
 
-  function push(name, price){
-    if(!name || price==null || price<=0) return;
+  for(let i=win.start; i<=win.end; i++){
+    let l = lines[i];
+    if (!l) continue;
+
+    const end = endsWithPrice(l);
+    if (end){
+      out.push(l);
+      continue;
+    }
+
+    // Si la siguiente línea termina con precio, fusiona
+    const next = lines[i+1] || '';
+    const endNext = endsWithPrice(next);
+    if (endNext){
+      const nameJoined = (l + ' ' + endNext.namePart).replace(/\s{2,}/g,' ').trim();
+      const merged = nameJoined + ' ' + (next.match(/([0-9]+[.,]\d{2}|\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))/) || [''])[0];
+      out.push(merged);
+      i++; // saltamos la siguiente porque ya la fusionamos
+      continue;
+    }
+
+    // Si esta línea tiene texto de producto pero sin precio, guárdala por si la siguiente trae cantidad + precio
+    out.push(l);
+  }
+
+  // Limpia filas que quedaron claramente no-producto
+  return out.filter(s=>{
+    const e = endsWithPrice(s);
+    if (e) return true;
+    // Permitimos una línea de ítem sin precio si la siguiente lo trae (arriba ya se unió; aquí descartamos ruido)
+    return looksTextualName(s) && !META_RX.test(s) && !ADDRESS_RX.test(s);
+  });
+}
+
+/* ===== Parseo de ítems robusto ===== */
+function parseItems(mergedLines){
+  const items = [];
+
+  function pushItem(nameRaw, price){
+    if(!nameRaw || price==null || price<=0) return;
     let qty = 1;
-    const qm = name.match(/(?:^|\s)(?:x\s*)?(\d{1,2})(?:\s*[x×])?(?:\s|$)/i);
-    if (qm) qty = Math.max(1, parseInt(qm[1],10));
-    name = name
-      .replace(/(?:^|\s)(?:x\s*)?\d{1,2}(?:\s*[x×])?(?:\s|$)/ig,' ')
+    // soporta: "2 ITEM", "ITEM 2", "ITEM x2", "x2 ITEM"
+    const qrx = /(?:^|\s)(?:x\s*)?(\d{1,2})(?:\s*[x×])?(?=\s|$)/i;
+    const m = nameRaw.match(qrx);
+    if (m) qty = Math.max(1, parseInt(m[1],10));
+
+    let name = nameRaw
+      .replace(/(?:^|\s)(?:x\s*)?\d{1,2}(?:\s*[x×])?(?=\s|$)/ig,' ')
       .replace(/\s{2,}/g,' ')
       .replace(/[.:,-]\s*$/,'')
       .trim();
-    if (!looksTextualName(name)) { note(`Descartado no-item: "${name}"`); return; }
-    out.push({ name, qty, price });
+
+    if (!looksTextualName(name)) return;
+    items.push({ name, qty, price });
   }
 
-  for(let i=win.start;i<=win.end;i++){
-    const l = lines[i];
-    const end = endsWithPrice(l);
-    if(!end) continue;
-    const left = end.namePart;
-    if (!/[a-z]/i.test(left)) continue;
-    push(left, end.price);
+  for (let i=0;i<mergedLines.length;i++){
+    const line = mergedLines[i];
+    const end = endsWithPrice(line);
+    if (end){
+      // caso normal: "<texto> ... <precio>"
+      pushItem(end.namePart, end.price);
+      continue;
+    }
+
+    // caso: "2 ITEM" en esta línea y precio en la siguiente
+    const next = mergedLines[i+1] || '';
+    const endNext = endsWithPrice(next);
+    if (endNext && looksTextualName(line)){
+      pushItem(line + ' ' + endNext.namePart, endNext.price);
+      i++;
+      continue;
+    }
+
+    // caso: "<texto> 2 99.00" (cantidad en medio, ya cubierto por endsWithPrice)
+    // caso: "<texto>" (no hacemos nada)
   }
 
-  // Compactar por nombre
+  // Compactar por nombre (suma qty y precio)
   const comp = [];
-  for(const it of out){
+  for(const it of items){
     const j = comp.findIndex(x => x.name.toLowerCase() === it.name.toLowerCase());
     if (j>=0){
       comp[j].qty += it.qty;
       comp[j].price = +(comp[j].price + it.price).toFixed(2);
     } else comp.push({...it});
   }
-  note(`Items: ${comp.length}`);
+  note(`Items detectados: ${comp.length}`);
   return comp;
 }
 
-/* ===== TOTAL (robusto contra subtotal/propina) ===== */
+/* ===== TOTAL (robusto) ===== */
 function detectGrandTotal(lines){
   const isCard = (s)=>/\b(visa|master|amex|tarjeta|card)\b/i.test(s);
 
-  // 1) TOTAL tras “propina/servicio” si existe
+  // 1) TOTAL tras “propina/servicio”
   let propIdx = -1;
   for(let i=0;i<lines.length;i++) if (/propina|servicio|service/i.test(lines[i])) propIdx = i;
   if (propIdx>=0){
@@ -181,11 +264,10 @@ function detectGrandTotal(lines){
   return null;
 }
 
-/* ===== Folio de 5 dígitos cerca de fecha/hora/mesero ===== */
+/* ===== Folio 5 dígitos (cerca de fecha/hora/mesero) ===== */
 function findDateIdx(lines){ return lines.findIndex(s=>/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s)); }
 function findTimeIdx(lines){ return lines.findIndex(s=>/(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s)); }
 function findMeseroIdx(lines){ const i = lines.findIndex(s=>/\bmesero\b|\bmesa\b|\bclientes?\b/i.test(s)); return i>=0?i:0; }
-
 function extractFolio5(lines){
   const iD = findDateIdx(lines);
   const iT = findTimeIdx(lines);
@@ -194,7 +276,7 @@ function extractFolio5(lines){
   const from = Math.max(iM, anchor>=0?anchor:iM);
   const to   = Math.min(lines.length-1, from+5);
   const pick5 = (s)=>{
-    if (/cp\s*\d{5}/i.test(s)) return null; // Código Postal no
+    if (/cp\s*\d{5}/i.test(s)) return null;
     const m = s.match(/\b(\d{5})\b/g);
     return m ? m[m.length-1] : null;
   };
@@ -221,10 +303,10 @@ async function preprocess(file){
     height: Math.round(bmp.height*scale)
   });
   const ctx = c.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.22) brightness(1.06)';
+  ctx.filter = 'grayscale(1) contrast(1.2) brightness(1.06)';
   ctx.drawImage(bmp, 0, 0, c.width, c.height);
 
-  // Si hay OpenCV, binariza + deskew ligero
+  // Si hay OpenCV, binariza + deskew
   if (typeof cv !== 'undefined' && cv?.Mat){
     let src = cv.imread(c);
     let gray = new cv.Mat();
@@ -265,47 +347,63 @@ async function ocrCanvas(canvas, { psm=6 } = {}){
       tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$., ',
     }
   );
-  return data; // {text, words, …}
+  return data; // { text, words, ... }
 }
 
-/* ===== Proceso principal ===== */
+/* ===== Proceso principal con 3 pasadas ===== */
 async function processTicket(file){
   const pre = await preprocess(file);
 
-  // Zona inferior para totales (42% final)
+  // 1) Zona ítems (centro 45% de alto)
   const h = pre.height, w = pre.width;
-  const y0 = Math.max(0, Math.floor(h*0.58));
-  const bot = document.createElement('canvas');
-  bot.width = w; bot.height = h - y0;
-  bot.getContext('2d').drawImage(pre, 0, y0, w, h-y0, 0, 0, w, h-y0);
+  const yI = Math.max(0, Math.floor(h*0.18));
+  const hI = Math.max(60, Math.floor(h*0.45));
+  const mid = document.createElement('canvas');
+  mid.width = w; mid.height = hI;
+  mid.getContext('2d').drawImage(pre, 0, yI, w, hI, 0, 0, w, hI);
 
-  // OCR totales y general
-  const [totals, full] = await Promise.all([
+  // 2) Zona totales (≈42% final)
+  const yT = Math.max(0, Math.floor(h*0.58));
+  const bot = document.createElement('canvas');
+  bot.width = w; bot.height = h - yT;
+  bot.getContext('2d').drawImage(pre, 0, yT, w, h-yT, 0, 0, w, h-yT);
+
+  // OCR en paralelo
+  const [dMid, dBot, dFull] = await Promise.all([
+    ocrCanvas(mid,  { psm: 6 }),
     ocrCanvas(bot,  { psm: 6 }),
     ocrCanvas(pre,  { psm: 4 }),
   ]);
 
-  const totalText = (totals.text||'').trim();
-  const fullText  = (full.text||'').trim();
+  const textMid  = (dMid.text||'').trim();
+  const textBot  = (dBot.text||'').trim();
+  const textFull = (dFull.text||'').trim();
 
-  const lines = splitLines(fullText);
-  const win   = findProductsWindow(lines);
-  const items = parseItems(lines, win);
+  // Construye líneas para ventana ítems a partir de (mid + full) para mayor recall
+  const linesFull = splitLines(textFull);
+  const win       = findProductsWindow(linesFull);
+  const linesWin  = win.start>=0 ? linesFull.slice(win.start, Math.max(win.start,win.end)+1) : splitLines(textMid);
 
-  let total = detectGrandTotal(lines.concat(splitLines(totalText)));
+  // Fusiona líneas partidas y parsea ítems
+  const merged = mergeWrappedLines(linesWin, {start:0, end:linesWin.length-1});
+  const items  = parseItems(merged);
+
+  // Total robusto combinando zonas
+  let total = detectGrandTotal(linesFull.concat(splitLines(textBot)));
   if (total==null && items.length){
     total = +(items.reduce((a,it)=> a + (it.price||0)*(it.qty||1), 0).toFixed(2));
     note(`Total por suma de items: ${total}`);
   }
 
-  const folio = extractFolio5(lines);
-  const fecha = toISODateFromText(fullText);
+  // Folio y fecha
+  const folio = extractFolio5(linesFull);
+  const fecha = toISODateFromText(textFull);
 
   dump();
-  return { folio, fecha, total, items, ocrText: fullText };
+  return { folio, fecha, total, items, ocrText: textFull };
 }
 
-/* ===== Integración con tu UI ===== */
+/* ===== Integración con tu UI actual ===== */
 async function onClickProcesar(){
   const input = document.getElementById('ticketFile');
   const file  = input?.files?.[0];
