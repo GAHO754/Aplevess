@@ -1,7 +1,3 @@
-/* ===========================
-   ocr.js — OCR robusto para tickets Applebee’s
-   =========================== */
-
 /* ===== Depuración opcional ===== */
 const DBG = { lines:[], notes:[] };
 function note(s){ try{ DBG.notes.push(String(s)); }catch{} }
@@ -61,7 +57,7 @@ function looksTextualName(s){
   if(!s) return false;
   if (/^\d+([x×]\d+)?$/.test(s)) return false; // pura cantidad
   const low = s.toLowerCase();
-  if (/\b(sub-?total|subtotal|iva|impuesto|propina|servicio|service|descuento|cover|cupon|cup[oó]n|cambio|cancel|anulado|cliente|clientes|mesa|mesero|visa|master|amex|tarjeta|efectivo|cash|pago|payment|saldo|orden|order|nota|reimpres|autoriz)/.test(low)) return false;
+  if (/\b(sub-?total|subtotal|iva|impuesto|propina|servicio|service|descuento|cover|cupon|cambio|cancel|anulado|cliente|clientes|mesa|mesero|visa|master|amex|tarjeta|efectivo|cash|pago|payment|saldo|orden|order|nota|reimpres|autoriz)/.test(low)) return false;
   if (/\b(cp|c\.p\.|col|av|avenida|calle|domicilio|chihuahua|tecnologico)\b/i.test(low)) return false;
   return /[a-záéíóúñ]/i.test(s) && s.length >= 3;
 }
@@ -276,14 +272,14 @@ async function ocrCanvas(canvas, { psm=6 } = {}){
 async function processTicket(file){
   const pre = await preprocess(file);
 
-  // Zona inferior para totales (≈42% final)
+  // Zona inferior para totales (42% final)
   const h = pre.height, w = pre.width;
   const y0 = Math.max(0, Math.floor(h*0.58));
   const bot = document.createElement('canvas');
   bot.width = w; bot.height = h - y0;
   bot.getContext('2d').drawImage(pre, 0, y0, w, h-y0, 0, 0, w, h-y0);
 
-  // OCR totales y general (paralelo)
+  // OCR totales y general
   const [totals, full] = await Promise.all([
     ocrCanvas(bot,  { psm: 6 }),
     ocrCanvas(pre,  { psm: 4 }),
