@@ -1,482 +1,515 @@
-/* ===========================
-   ocr.js — OCR robusto para tickets Applebee’s
-   con filtrado 2.0 de productos
-   =========================== */
+/* =========================================================
+   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s
+   =========================================================
+   Flujo:
+   1. Tomamos la imagen (file input o cámara)
+   2. Preprocesamos (escala + contraste + opcional OpenCV)
+   3. Tesseract saca el TEXTO
+   4. (IA) Le pedimos a OpenAI que nos regrese JSON limpio
+   5. Si IA falla → parser local
+   6. Mandamos los productos a registrar.js con `ocr:productos`
+   ========================================================= */
 
-/* ===== Depuración opcional ===== */
-const DBG = { lines:[], notes:[] };
-function note(s){ try{ DBG.notes.push(String(s)); }catch{} }
-function dump(){
-  const el = document.getElementById('ocrDebug');
-  if(!el) return;
+/* ================= Depuración ================= */
+const DBG = { lines: [], notes: [] };
+function dbgNote(s) { try { DBG.notes.push(String(s)); } catch {} }
+function dbgDump() {
+  const el = document.getElementById("ocrDebug");
+  if (!el) return;
   el.textContent =
-    '[NOTAS]\n' + DBG.notes.join('\n') +
-    '\n\n[LINEAS]\n' + DBG.lines.map((s,i)=>`${String(i).padStart(2,'0')}: ${s}`).join('\n');
+    "[NOTAS]\n" + DBG.notes.join("\n") +
+    "\n\n[LINEAS]\n" + DBG.lines.map((s, i) => `${String(i).padStart(2, "0")}: ${s}`).join("\n");
 }
 
-/* ===== Utilidades base ===== */
-function fixLine(s){
-  if(!s) return s;
+/* ==================================================
+   1. Config IA
+   ================================================== */
+/**
+ * ⚠️ NO SUBAS TU API KEY A GITHUB
+ * Para probar localmente puedes pegarla aquí
+ * y luego borrarla antes de subir.
+ *
+ * Opciones para producción:
+ * - window.OPENAI_API_KEY = "sk-xxxxx" (inyectado por otro script que NO está en el repo)
+ * - Llamar a tu propio endpoint /api/ai-ocr que tenga la key
+ */
+const OPENAI_API_KEY = window.OPENAI_API_KEY || ""; // <--- BORRAR ANTES DE SUBIR
+// Si vas a usar endpoint propio, ponlo aquí (si esto está, se usa este en vez del fetch directo a OpenAI)
+const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // ej. "https://tu-funcion.vercel.app/api/ocr"
+
+/* ==================================================
+   2. Utilidades base
+   ================================================== */
+function fixOcrDigits(s) {
   return s
-    // arreglos típicos de OCR solo cuando están entre dígitos
-    .replace(/(?<=\d)O(?=\d)/g,'0')
-    .replace(/(?<=\d)S(?=\d)/g,'5')
-    .replace(/(?<=\d)l(?=\d)/g,'1')
-    .replace(/(?<=\d)I(?=\d)/g,'1');
+    .replace(/(?<=\d)[Oo](?=\d)/g, "0")
+    .replace(/(?<=\d)S(?=\d)/g, "5")
+    .replace(/(?<=\d)[lI](?=\d)/g, "1");
 }
 
-function splitLines(text){
-  const arr = String(text||'')
-    .replace(/\r/g,'\n')
-    .split('\n')
-    .map(s=>fixLine(s.replace(/\s{2,}/g,' ').trim()))
+function splitLines(text) {
+  const arr = String(text || "")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((s) => fixOcrDigits(s.replace(/\s{2,}/g, " ").trim()))
     .filter(Boolean);
   DBG.lines = arr.slice();
   return arr;
 }
 
-// normaliza un número estilo MX/US → Number
-function normalizeNum(raw){
-  if(!raw) return null;
-  let s = String(raw).replace(/[^\d.,-]/g,'').trim();
-  if(!s) return null;
-  if(s.includes(',') && s.includes('.')){
-    // elegir el último como decimal
-    if (s.lastIndexOf('.') > s.lastIndexOf(',')) {
-      s = s.replace(/,/g,'');
-    } else {
-      s = s.replace(/\./g,'').replace(',', '.');
-    }
-  } else if (s.includes(',')){
+function normalizeNum(raw) {
+  if (!raw) return null;
+  let s = String(raw).replace(/[^\d.,-]/g, "").trim();
+  if (!s) return null;
+  if (s.includes(",") && s.includes(".")) {
+    if (s.lastIndexOf(".") > s.lastIndexOf(",")) s = s.replace(/,/g, "");
+    else s = s.replace(/\./g, "").replace(",", ".");
+  } else if (s.includes(",")) {
     const m = s.match(/,\d{2}$/);
-    s = m ? s.replace(',', '.') : s.replace(/,/g,'');
+    s = m ? s.replace(",", ".") : s.replace(/,/g, "");
   }
   const n = parseFloat(s);
-  return Number.isFinite(n) ? +(n.toFixed(2)) : null;
+  return Number.isFinite(n) ? +n.toFixed(2) : null;
 }
 
-// ¿la línea termina con un precio?
-function endsWithPrice(line){
+function endsWithPrice(line) {
   const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*$/);
-  if(!m) return null;
+  if (!m) return null;
   const price = normalizeNum(m[1]);
-  if(price == null) return null;
-  const namePart = line.replace(m[0], '').trim();
+  if (price == null) return null;
+  const namePart = line.replace(m[0], "").trim();
   return { namePart, price };
 }
 
-// fecha yyyy-mm-dd desde el bloque completo
-function toISODateFromText(text){
-  const m = String(text||'').match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
-  if(!m) return '';
-  let d = +m[1], mo = +m[2], y = +m[3];
-  if (d<=12 && mo>12) [d,mo] = [mo,d];
-  return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+/* ==================================================
+   3. Listas para filtrar líneas NO-producto
+   ================================================== */
+const NOT_PRODUCT_RX = new RegExp(
+  [
+    // datos fiscales / leyendas
+    "regimen fiscal",
+    "r.f.c", "rfc", "iva", "impt\\.?", "impuesto", "subtotal", "sub-?total",
+    "forma de pago", "metodo de pago", "cambio", "saldo", "total", "visa", "master", "amex",
+    "propina", "service", "servicio",
+    // encabezados / dirección
+    "av\\.", "avenida", "calle", "col\\.", "colonia", "cp\\s*\\d{5}", "chihuahua", "cd juarez",
+    // operativos
+    "mesero", "mesa", "clientes?", "reimpresion", "reimpresi[oó]n", "no\\.", "nota", "orden", "ticket",
+    // despedidas
+    "gracias por su visita", "gracias por tu visita", "vuelva pronto",
+    // timbres
+    "folio fiscal", "cfd[ii]", "sello", "cadena original"
+  ].join("|"),
+  "i"
+);
+
+// a veces OCR mete pedazos raros
+const CODEY_RX = /^(?:[>-]{1,3}\s*)?[A-Z]{2,6}\d{2,6}[A-Z0-9\-]*$/;
+
+/* ==================================================
+   4. Detección de ventana de productos (local)
+   ================================================== */
+function looksLikeFoodOrDrink(nameRaw) {
+  if (!nameRaw) return false;
+  const n = nameRaw.toLowerCase();
+  if (NOT_PRODUCT_RX.test(n)) return false;
+  // palabras que sí queremos
+  const OK = [
+    // bebidas
+    "limonada", "mojito", "margarita", "martini", "paloma", "piña colada", "pina colada",
+    "coca", "pepsi", "refresco", "agua", "jugo", "iced tea", "te shake", "shake",
+    // platillos
+    "burger", "hamburguesa", "chicken", "pollo", "salad", "ensalada",
+    "tacos", "sirloin", "arrachera", "buffalo", "salmon", "pasta", "fajita",
+    // entradas
+    "boneless", "alitas", "wings", "nachos", "dip", "sampler", "quesadilla",
+    // postres
+    "brownie", "cheesecake", "postre", "dessert", "helado"
+  ];
+  if (OK.some((w) => n.includes(w))) return true;
+  // si tiene letras y no es fiscal ni mesa ni reimpresión, lo dejamos pasar
+  return /[a-záéíóúñ]/i.test(n) && n.length >= 3 && !CODEY_RX.test(n);
 }
 
-/* ======================================================
-   FILTROS que agregamos para quitar lo que no es platillo
-   ====================================================== */
-
-// lista negra “aprendida” — aquí puedes ir metiendo lo que se cuele
-// lista negra “aprendida” — aquí puedes ir metiendo lo que se cuele
-const BAD_PATTERNS = [
-  'armuyo rest',
-  'reimpresion',
-  'reimpresión',
-  'are240',
-  'are240115daa',
-  'rest.',
-  'clientes:',
-  'reimpresion no',
-  'mesa ',
-  'cd juarez',
-  'chih',
-  'cp 32530',
-  'impt.total',
-  'impt total',
-  'impuesto',
-  'iva',
-  'auth',
-  'visa',
-  'regimen fiscal',
-  'persona moral',
-  'gracias por su visita',
-  'gracias por tu visita',
-  'visitanos',
-  'te esperamos pronto',
-  'te esperamos manana!!!',
-  'sugerenciastapplebeesmx .com'
-];
-
-
-// no-productos por palabras clave
-const NOT_PRODUCT_RX =
-  /\b(sub-?total|subtotal|iva|impuesto|impt\.?\.?total|propina|servicio|service|descuento|cupon|cambio|cancel|anulado|cliente|clientes|mesa|mesero|reimpres|visa|master|amex|tarjeta|efectivo|pago|payment|auth|total|restaurant|rest\b)\b/i;
-
-// dirección / encabezado
-const ADDRESS_RX =
-  /\b(cp|c\.p\.|col|av|avenida|calle|domicilio|chihuahua|juarez|tecnologico|tecnológico|cd\s+juarez)\b/i;
-
-// códigos propios de los tickets
-const CODEY_RX = /\b(are\d+|armuyo|rest\.?|reimpresion|reimpresión|no\.?:?)\b/i;
-
-// palabras que SÍ queremos (comida/bebidas)
-const FOOD_HINTS = [
-  // bebidas bar
-  "morita","mezcal","mezcalita","margarita","mojito","martini","piña colada","pina colada","spritz","aperol",
-  // burgers
-  "burger","hamburguesa","cheeseburger","bacon","tocino",
-  // fuertes
-  "ribs","costillas","sirloin","tacos","taco","tacos de sirloin","arrachera","skillet","steak","ribeye","new york",
-  // ensaladas
-  "buffalo salad","buffalo","salad","ensalada","caesar","cesar",
-  // entradas
-  "sampler","onion rings","aros de cebolla","nachos","dip","chips","queso",
-  // pastas
-  "pasta","alfredo","fettuccine","lasaña","lasagna","parm",
-  // pollo/pescado
-  "pollo","chicken","tenders","shrimp","camarones","salmon","salmón","fish and chips","fish & chips","tilapia",
-  // postres
-  "postre","dessert","brownie","cheesecake","blondie","ice cream","helado","pastel","pie",
-  // bebidas normales
-  "refresco","soda","coca","pepsi","sprite","fanta","limonada","lemonade","agua","jugo","iced tea","smoothie","shake",
-  // niños
-  "kids","infantil"
-];
-
-// ¿esta línea es claramente basura?
-function isObviouslyGarbage(str){
-  const s = str.toLowerCase();
-  // 1) match con lista negra
-  if (BAD_PATTERNS.some(p => s.includes(p))) return true;
-  // 2) demasiados símbolos
-  const nonLetters = s.replace(/[a-záéíóúñ0-9 ]/g,'');
-  if (nonLetters.length >= 6) return true;
-  // 3) muy cortito o muy largo
-  if (s.length < 6) return true;     // “E A”, “a 1”, “3 y”
-  if (s.length > 55) return true;    // direcciones
-  // 4) solo mayús + números + puntos → parece código
-  if (/^[A-Z0-9 .-]{6,}$/.test(str) && !/[a-z]/.test(str)) return true;
-  return false;
-}
-
-// ¿suena a platillo/bebida?
-function looksProductName(str){
-  if (!str) return false;
-  const s = str.toLowerCase().trim();
-
-  // filtros duros primero
-  if (isObviouslyGarbage(s)) return false;
-  if (NOT_PRODUCT_RX.test(s)) return false;
-  if (ADDRESS_RX.test(s)) return false;
-  if (CODEY_RX.test(s)) return false;
-
-  // si trae una palabra de comida/bebida → sí
-  if (FOOD_HINTS.some(w => s.includes(w))) return true;
-
-  // 2–6 palabras normales con letras → lo aceptamos
-  const parts = s.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2 && parts.length <= 6 && /[a-záéíóúñ]/i.test(s)) {
+function findProductsWindow(lines) {
+  const start = lines.findIndex((l) => {
+    const end = endsWithPrice(l);
+    if (!end) return false;
+    const left = end.namePart;
+    if (!/[a-z]/i.test(left)) return false;
+    if (!looksLikeFoodOrDrink(left)) return false;
     return true;
-  }
+  });
+  if (start < 0) return { start: -1, end: -1 };
 
-  return false;
+  let end = start;
+  for (let i = start; i < lines.length; i++) {
+    const l = lines[i].toLowerCase();
+    if (/sub-?total|iva|impuesto|^total\s*:?\s*$/i.test(l)) {
+      end = i - 1;
+      break;
+    }
+    end = i;
+  }
+  dbgNote(`Ventana productos ${start}..${end}`);
+  return { start, end };
 }
 
-/* ===== Productos (flechas verdes) — versión filtrada 2.0 ===== */
-function parseProductLines(lines){
-  const raw = [];
+function parseItemsLocal(lines, win) {
+  if (win.start < 0 || win.end < 0 || win.end < win.start) return [];
 
-  for (let i=0; i<lines.length; i++){
-    const line = lines[i];
-
-    // descartar líneas de sistema
-    if (NOT_PRODUCT_RX.test(line) || ADDRESS_RX.test(line) || CODEY_RX.test(line) || isObviouslyGarbage(line)) {
-      continue;
+  const out = [];
+  const pushItem = (name, price) => {
+    if (!name || price == null || price <= 0) return;
+    name = name
+      .replace(/(?:^|\s)(?:x\s*)?\d{1,2}(?:\s*[x×])?(?:\s|$)/gi, " ")
+      .replace(/\s{2,}/g, " ")
+      .replace(/[.:,-]\s*$/, "")
+      .trim();
+    if (!looksLikeFoodOrDrink(name)) {
+      dbgNote(`Descartado (no-food): "${name}"`);
+      return;
     }
+    out.push({ name, qty: 1, price });
+  };
 
-    // 1) línea con precio al final
-    const end = endsWithPrice(line);
-    if (end) {
-      const name = end.namePart;
-      if (looksProductName(name)) {
-        raw.push({ name, qty:1, price:end.price });
-      }
-      continue;
-    }
-
-    // 2) línea que parece producto pero SIN precio:
-    //    intentamos tomar el precio de la siguiente
-    if (looksProductName(line)) {
-      const next = lines[i+1] || '';
-      const endNext = endsWithPrice(next);
-      if (endNext && !isObviouslyGarbage(next)) {
-        raw.push({ name: line, qty:1, price:endNext.price });
-        i++; // ya usamos la de abajo
-      } else {
-        // sin precio pero sí parece producto
-        raw.push({ name: line, qty:1, price:null });
-      }
-    }
+  for (let i = win.start; i <= win.end; i++) {
+    const l = lines[i];
+    if (NOT_PRODUCT_RX.test(l)) continue;
+    const end = endsWithPrice(l);
+    if (!end) continue;
+    pushItem(end.namePart, end.price);
   }
 
-  // compactar por nombre
-  const compact = [];
-  for (const it of raw){
-    const j = compact.findIndex(x => x.name.toLowerCase() === it.name.toLowerCase());
-    if (j >= 0){
-      compact[j].qty   += (it.qty||1);
-      if (typeof it.price === 'number')
-        compact[j].price = +((compact[j].price||0) + it.price).toFixed(2);
-    } else {
-      compact.push({...it});
-    }
-  }
+  // compactar
+  const comp = [];
+  out.forEach((it) => {
+    const j = comp.findIndex((x) => x.name.toLowerCase() === it.name.toLowerCase());
+    if (j >= 0) {
+      comp[j].qty += it.qty;
+      comp[j].price = +(comp[j].price + it.price).toFixed(2);
+    } else comp.push({ ...it });
+  });
 
-  // 🔥 paso extra: si hay demasiado ruido, nos quedamos con los 6 más "claros"
-  if (compact.length > 6) {
-    const withPrice  = compact.filter(p => typeof p.price === 'number');
-    const without    = compact.filter(p => typeof p.price !== 'number');
-    const sorted     = withPrice.concat(without);
-    compact.length = 0;
-    compact.push(...sorted.slice(0,6));
-  }
-
-  note(`Productos detectados (filtrados 2.0): ${compact.length}`);
-  return compact;
+  dbgNote(`Items locales: ${comp.length}`);
+  return comp;
 }
 
-/* ===== TOTAL (robusto contra subtotal/propina) ===== */
-function detectGrandTotal(lines){
-  const isCard = (s)=>/\b(visa|master|amex|tarjeta|card)\b/i.test(s);
-
-  // 1) si hay propina/servicio, buscamos un TOTAL después
+/* ==================================================
+   5. Total y folio locales
+   ================================================== */
+function detectGrandTotal(lines) {
+  const isCard = (s) => /\b(visa|master|amex|tarjeta|card)\b/i.test(s);
+  // 1) después de propina
   let propIdx = -1;
-  for(let i=0;i<lines.length;i++){
+  for (let i = 0; i < lines.length; i++)
     if (/propina|servicio|service/i.test(lines[i])) propIdx = i;
-  }
-  if (propIdx>=0){
-    for(let j=lines.length-1;j>propIdx;j--){
+  if (propIdx >= 0) {
+    for (let j = lines.length - 1; j > propIdx; j--) {
       const l = lines[j];
-      if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)){
+      if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)) {
         const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-        if (mm && mm.length){
-          const v = normalizeNum(mm[mm.length-1]);
-          if(v!=null){ note(`Total tras propina: ${v}`); return v; }
+        if (mm && mm.length) {
+          const v = normalizeNum(mm[mm.length - 1]);
+          if (v != null) {
+            dbgNote(`Total (propina): ${v}`);
+            return v;
+          }
         }
       }
     }
   }
-
-  // 2) último TOTAL válido
-  for(let i=lines.length-1;i>=0;i--){
+  // 2) último total
+  for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
-    if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)){
+    if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)) {
       const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if (mm && mm.length){
-        const v = normalizeNum(mm[mm.length-1]);
-        if(v!=null){ note(`Total por último TOTAL: ${v}`); return v; }
+      if (mm && mm.length) {
+        const v = normalizeNum(mm[mm.length - 1]);
+        if (v != null) {
+          dbgNote(`Total (último): ${v}`);
+          return v;
+        }
       }
     }
   }
-
-  // 3) subtotal + propina
-  let sub=null, tip=null;
-  for(const l of lines){
-    if (/sub-?total|subtotal/i.test(l)){
-      const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if (mm) sub = normalizeNum(mm[mm.length-1]);
-    }else if (/propina|servicio|service/i.test(l)){
-      const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if (mm) tip = normalizeNum(mm[mm.length-1]);
-    }
-  }
-  if (sub!=null && tip!=null){
-    const t=+(sub+tip).toFixed(2);
-    note(`Total subtotal+propina: ${t}`);
-    return t;
-  }
-
-  // 4) máximo importe (excluye tarjeta)
-  const nums=[];
-  lines.forEach(l=>{
+  // 3) máximo importe
+  const nums = [];
+  lines.forEach((l) => {
     if (isCard(l)) return;
     const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-    if (mm) mm.forEach(v=>{ const p = normalizeNum(v); if(p!=null) nums.push(p); });
+    if (mm) mm.forEach((v) => { const p = normalizeNum(v); if (p != null) nums.push(p); });
   });
-  if (nums.length){
-    const t=Math.max(...nums);
-    note(`Total por máximo importe: ${t}`);
+  if (nums.length) {
+    const t = Math.max(...nums);
+    dbgNote(`Total (máximo): ${t}`);
     return t;
   }
-
-  note('Total no encontrado');
+  dbgNote("Total no encontrado");
   return null;
 }
 
-/* ===== Folio de 5 dígitos cerca de fecha/hora/mesero ===== */
-function findDateIdx(lines){ return lines.findIndex(s=>/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s)); }
-function findTimeIdx(lines){ return lines.findIndex(s=>/(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s)); }
-function findMeseroIdx(lines){ const i = lines.findIndex(s=>/\bmesero\b|\bmesa\b|\bclientes?\b/i.test(s)); return i>=0?i:0; }
-
-function extractFolio5(lines){
-  const iD = findDateIdx(lines);
-  const iT = findTimeIdx(lines);
-  const iM = findMeseroIdx(lines);
-  const anchor = (iD>=0 || iT>=0) ? Math.max(iD,iT) : -1;
-  const from = Math.max(iM, anchor>=0?anchor:iM);
-  const to   = Math.min(lines.length-1, from+5);
-  const pick5 = (s)=>{
-    if (/cp\s*\d{5}/i.test(s)) return null; // Código Postal no
+function extractFolio5(lines) {
+  // buscamos 5 dígitos cerca de mesero/fecha/hora
+  const isDate = (s) => /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s);
+  const isTime = (s) => /(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s);
+  const iD = lines.findIndex(isDate);
+  const iT = lines.findIndex(isTime);
+  const iM = lines.findIndex((s) => /\bmesero\b|\bmesa\b|\bclientes?\b/i.test(s));
+  const anchor = (iD >= 0 || iT >= 0) ? Math.max(iD, iT) : -1;
+  const from = Math.max(iM >= 0 ? iM : 0, anchor >= 0 ? anchor : 0);
+  const to = Math.min(lines.length - 1, from + 6);
+  const pick5 = (s) => {
+    if (/cp\s*\d{5}/i.test(s)) return null;
     const m = s.match(/\b(\d{5})\b/g);
-    return m ? m[m.length-1] : null;
+    return m ? m[m.length - 1] : null;
   };
-  for(let i=from;i<=to;i++){
+  for (let i = from; i <= to; i++) {
     const c = pick5(lines[i]);
-    if (c){ note(`Folio ventana fecha/hora @${i}: ${c}`); return c; }
+    if (c) { dbgNote(`Folio detectado @${i}: ${c}`); return c; }
   }
-  for(let i=iM;i<Math.min(lines.length,iM+15);i++){
-    const s = lines[i];
-    if (/\b(cp|col|av|calle)\b/i.test(s)) continue;
-    const m = s.match(/\b(\d{5})\b/);
-    if (m){ note(`Folio fallback bloque mesero @${i}: ${m[1]}`); return m[1]; }
-  }
-  note('Folio no encontrado');
+  dbgNote("Folio no encontrado");
   return null;
 }
 
-/* ===== PREPROCESADO IMAGEN ===== */
-async function preprocess(file){
+function extractDateISO(text) {
+  const m = String(text || "").match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
+  if (!m) return "";
+  let d = +m[1], mo = +m[2], y = +m[3];
+  if (d <= 12 && mo > 12) [d, mo] = [mo, d];
+  return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/* ==================================================
+   6. PREPROCESADO IMAGEN
+   ================================================== */
+async function preprocessImage(file) {
   const bmp = await createImageBitmap(file);
   const targetH = 2400;
   const scale = Math.max(1, Math.min(3, targetH / bmp.height));
-  const c = Object.assign(document.createElement('canvas'), {
-    width: Math.round(bmp.width*scale),
-    height: Math.round(bmp.height*scale)
+  const c = Object.assign(document.createElement("canvas"), {
+    width: Math.round(bmp.width * scale),
+    height: Math.round(bmp.height * scale),
   });
-  const ctx = c.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.22) brightness(1.06)';
+  const ctx = c.getContext("2d");
+  ctx.filter = "grayscale(1) contrast(1.25) brightness(1.05)";
   ctx.drawImage(bmp, 0, 0, c.width, c.height);
 
-  // si hay OpenCV, binarizamos
-  if (typeof cv !== 'undefined' && cv?.Mat){
-    let src = cv.imread(c);
-    let gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-    try{
-      const clahe = new cv.CLAHE(2.0, new cv.Size(8,8));
-      clahe.apply(gray, gray);
-      clahe.delete();
-    }catch{}
-    let bw = new cv.Mat();
-    cv.adaptiveThreshold(gray, bw, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 35, 10);
-    cv.imshow(c, bw);
-    src.delete(); gray.delete(); bw.delete();
+  // si hay OpenCV, lo mejoramos tantito
+  if (typeof cv !== "undefined" && cv?.Mat) {
+    try {
+      let src = cv.imread(c);
+      let gray = new cv.Mat();
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+      let bw = new cv.Mat();
+      cv.adaptiveThreshold(gray, bw, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 35, 10);
+      cv.imshow(c, bw);
+      src.delete(); gray.delete(); bw.delete();
+    } catch (e) {
+      console.warn("OpenCV preprocess falló:", e);
+    }
   }
 
   return c;
 }
 
-/* ===== Tesseract helpers ===== */
-async function ocrCanvas(canvas, { psm=6 } = {}){
-  const blob = await new Promise(res=>canvas.toBlob(res, 'image/jpeg', 0.96));
-  const { data } = await Tesseract.recognize(
-    blob, 'spa+eng',
-    {
-      tessedit_pageseg_mode: String(psm),
-      preserve_interword_spaces: '1',
-      user_defined_dpi: '320',
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$., '
-    }
-  );
-  return data; // {text, words, …}
+/* ==================================================
+   7. Tesseract
+   ================================================== */
+async function runTesseract(canvas) {
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.96));
+  const { data } = await Tesseract.recognize(blob, "spa+eng", {
+    tessedit_pageseg_mode: "4",
+    preserve_interword_spaces: "1",
+    user_defined_dpi: "320",
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$., ",
+  });
+  return data.text || "";
 }
 
-/* ===== Proceso principal ===== */
-async function processTicket(file){
-  const pre = await preprocess(file);
-
-  // parte inferior (totales)
-  const h = pre.height, w = pre.width;
-  const y0 = Math.max(0, Math.floor(h*0.58));
-  const bot = document.createElement('canvas');
-  bot.width = w; bot.height = h - y0;
-  bot.getContext('2d').drawImage(pre, 0, y0, w, h-y0, 0, 0, w, h-y0);
-
-  // OCR en paralelo
-  const [totals, full] = await Promise.all([
-    ocrCanvas(bot,  { psm: 6 }),
-    ocrCanvas(pre,  { psm: 4 }),
-  ]);
-
-  const totalText = (totals.text||'').trim();
-  const fullText  = (full.text||'').trim();
-
-  const lines = splitLines(fullText);
-
-  // productos (flechas verdes)
-  const productos = parseProductLines(lines);
-
-  // total
-  let total = detectGrandTotal(lines.concat(splitLines(totalText)));
-  if (total==null && productos.length){
-    total = +(productos.reduce((a,it)=> a + (it.price||0)*(it.qty||1), 0).toFixed(2));
-    note(`Total por suma de items: ${total}`);
+/* ==================================================
+   8. IA con OpenAI
+   ================================================== */
+async function callOpenAI(rawText) {
+  // si no hay key ni proxy, no hacemos nada
+  if (!OPENAI_API_KEY && !OPENAI_PROXY_ENDPOINT) {
+    throw new Error("No hay API KEY ni proxy configurado");
   }
 
-  // folio y fecha
-  const folio = extractFolio5(lines);
-  const fecha = toISODateFromText(fullText);
+  // prompt muy dirigido
+  const sys = `Eres un parser de tickets de restaurante Applebee's de México.
+Tu trabajo es leer TEXTO OCR desordenado y devolver solo lo que pide el sistema.
+Regresa SIEMPRE JSON válido con esta forma:
+{
+  "folio": "50037",
+  "fecha": "2025-09-24",
+  "total": 716.00,
+  "items": [
+    { "name": "Morita Mezcal", "qty": 1, "price": 149.00 },
+    { "name": "Te Shake", "qty": 1, "price": 49.00 },
+    { "name": "Buffalo Salad", "qty": 1, "price": 259.00 },
+    { "name": "Tacos de Sirloin", "qty": 1, "price": 259.00 }
+  ]
+}
+Reglas:
+- "items" SOLO pueden ser comidas, platillos, bebidas o postres. NO pongas "Régimen Fiscal", "Gracias por su visita", "Reimpresión", "Clientes", "Mesa", "IVA", "Subtotal", "Impt. Total", "VISA", "Tarjeta", "Propina".
+- Si ves cosas raras que no son comida, NO las pongas.
+- El folio es casi siempre un número de 5 dígitos cerca de "Mesero", "Clientes", "Mesa" o la hora.
+- La fecha viene como dd/mm/aaaa. Devuélvela como aaaa-mm-dd.
+- El total es el TOTAL de consumo, no la tarjeta. Si hay dos totales, prefiere el que está en la sección principal.`;
+  const user = `TEXTO OCR:\n${rawText}\n\nDevuélveme SOLO el JSON, sin explicación.`;
 
-  dump();
-  return { folio, fecha, total, items: productos, ocrText: fullText };
+  // 1) si hay proxy configurado
+  if (OPENAI_PROXY_ENDPOINT) {
+    const resp = await fetch(OPENAI_PROXY_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: rawText })
+    });
+    if (!resp.ok) throw new Error("Proxy IA respondió error");
+    return await resp.json();
+  }
+
+  // 2) llamada directa a OpenAI
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini", // puedes cambiar al que quieras
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: user }
+      ],
+      temperature: 0.1,
+      response_format: { type: "json_object" }
+    })
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error("OpenAI error: " + txt);
+  }
+
+  const data = await resp.json();
+  // el JSON ya viene en data.choices[0].message.content
+  const content = data.choices?.[0]?.message?.content || "{}";
+  return JSON.parse(content);
 }
 
-/* ===== Integración con tu UI ===== */
-async function onClickProcesar(){
-  const input = document.getElementById('ticketFile');
-  const file  = input?.files?.[0];
-  if (!file){ alert('Sube o toma una foto del ticket primero.'); return; }
+/* ==================================================
+   9. Proceso principal
+   ================================================== */
+async function processTicketWithIA(file) {
+  const statusEl = document.getElementById("ocrStatus");
+  if (statusEl) {
+    statusEl.textContent = "🕐 Escaneando ticket…";
+    statusEl.className = "validacion-msg";
+  }
 
-  const statusEl = document.getElementById('ocrStatus');
-  if (statusEl){ statusEl.textContent = '🕐 Escaneando ticket…'; }
+  try {
+    DBG.notes = [];
+    DBG.lines = [];
 
-  try{
-    DBG.notes=[]; DBG.lines=[];
-    const res = await processTicket(file);
+    // 1) preprocesar imagen
+    const canvas = await preprocessImage(file);
 
-    // rellenar campos
-    const iNum   = document.getElementById('inputTicketNumero');
-    const iFecha = document.getElementById('inputTicketFecha');
-    const iTotal = document.getElementById('inputTicketTotal');
+    // 2) OCR base
+    const text = await runTesseract(canvas);
+    dbgNote("OCR listo, longitud: " + text.length);
 
-    if (iNum)   iNum.value   = (res.folio && /^\d{5}$/.test(res.folio)) ? res.folio : '';
-    if (iFecha) iFecha.value = res.fecha || '';
-    if (iTotal) { iTotal.value = res.total!=null ? res.total.toFixed(2) : ''; iTotal.disabled = false; }
-
-    // mandar productos al registrar.js
-    window.__ocrProductos = res.items || [];
-    document.dispatchEvent(new CustomEvent('ocr:productos', { detail: window.__ocrProductos }));
-
-    if (statusEl){
-      const okFolio = (res.folio && /^\d{5}$/.test(res.folio));
-      const okItems = (res.items && res.items.length>0);
-      const okTotal = (res.total!=null);
-      statusEl.textContent =
-        (okFolio && okItems && okTotal)
-          ? '✓ Ticket procesado. Verifica y presiona “Registrar”.'
-          : `⚠️ Procesado. ${okFolio?'':'Folio (5 dígitos) no detectado. '} ${okItems?'':'No detecté productos claros. '} ${okTotal?'':'Total no encontrado. '}`.trim();
+    // 3) intentar IA
+    let result = null;
+    try {
+      result = await callOpenAI(text);
+      dbgNote("IA respondió OK");
+    } catch (iaErr) {
+      console.warn("IA falló, usando parser local:", iaErr);
     }
-  }catch(e){
+
+    let folio = "";
+    let fecha = "";
+    let total = null;
+    let items = [];
+
+    if (result && typeof result === "object") {
+      folio = result.folio || "";
+      fecha = result.fecha || "";
+      total = typeof result.total === "number" ? result.total : null;
+      items = Array.isArray(result.items) ? result.items : [];
+    }
+
+    // 4) si IA no dio todo, completamos con parser local
+    if (!folio || !fecha || !total || !items.length) {
+      const lines = splitLines(text);
+      const win = findProductsWindow(lines);
+      const localItems = parseItemsLocal(lines, win);
+      const localTotal = detectGrandTotal(lines);
+      const localFolio = extractFolio5(lines);
+      const localFecha = extractDateISO(text);
+
+      if (!folio) folio = localFolio || "";
+      if (!fecha) fecha = localFecha || "";
+      if (!total) total = localTotal != null ? localTotal : null;
+      if (!items.length) items = localItems;
+    }
+
+    // 5) filtrar una vez más por si IA nos deja algo feo
+    const finalItems = (items || []).filter(it => {
+      const n = String(it.name || "").toLowerCase();
+      if (!n) return false;
+      if (NOT_PRODUCT_RX.test(n)) return false;
+      if (CODEY_RX.test(n)) return false;
+      return true;
+    });
+
+    // 6) mandar a la UI
+    const iNum = document.getElementById("inputTicketNumero");
+    const iFecha = document.getElementById("inputTicketFecha");
+    const iTotal = document.getElementById("inputTicketTotal");
+
+    if (iNum) iNum.value = (folio && /^\d{5}$/.test(folio)) ? folio : (folio || "");
+    if (iFecha && fecha) iFecha.value = fecha;
+    if (iTotal && total != null) { iTotal.value = total.toFixed(2); iTotal.disabled = false; }
+
+    // construir el formato que espera registrar.js
+    const payload = finalItems.map(it => ({
+      name: it.name,
+      qty: it.qty || 1,
+      price: typeof it.price === "number" ? it.price : null
+    }));
+
+    // avisar a registrar.js
+    document.dispatchEvent(new CustomEvent("ocr:productos", { detail: payload }));
+
+    if (statusEl) {
+      statusEl.className = "validacion-msg ok";
+      statusEl.textContent = "✓ Ticket procesado. Verifica y presiona “Registrar”.";
+    }
+
+    dbgDump();
+  } catch (e) {
     console.error(e);
-    const statusEl = document.getElementById('ocrStatus');
-    if (statusEl) statusEl.textContent = '❌ No pude leer el ticket. Intenta con mejor iluminación y encuadre recto.';
-    alert('No se pudo leer el ticket. Prueba con más luz, sin sombras y acercando el ticket a la cámara.');
+    const statusEl = document.getElementById("ocrStatus");
+    if (statusEl) {
+      statusEl.className = "validacion-msg err";
+      statusEl.textContent = "❌ No pude leer el ticket. Intenta con mejor luz o que salga completo.";
+    }
+    alert("No se pudo leer el ticket. Vuelve a tomar la foto más cerca, recto y con buena luz.");
   }
 }
 
-// botón
-document.getElementById('btnProcesarTicket')?.addEventListener('click', onClickProcesar);
-
-
+/* ==================================================
+   10. Bind al botón
+   ================================================== */
+document.getElementById("btnProcesarTicket")?.addEventListener("click", async () => {
+  const inp = document.getElementById("ticketFile");
+  const file = inp?.files?.[0];
+  if (!file) {
+    alert("Sube o toma una foto del ticket primero.");
+    return;
+  }
+  await processTicketWithIA(file);
+});
