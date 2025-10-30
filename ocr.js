@@ -1,8 +1,17 @@
-/* ===========================
-   ocr.js — OCR tolerante para tickets Applebee’s
-   =========================== */
 
-// ===== Depuración opcional =====
+
+/* ========== CONFIGURA AQUÍ TU API KEY ========== */
+/* IMPORTANTE:
+   - Si esto lo vas a servir desde hosting público, NO dejes
+     la apiKey en el frontend. Mejor haz un endpoint en tu backend.
+   - Aquí lo dejo directo porque me pediste “para probar ya”.
+*/
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+
+/* =========================================================
+   1. Utilidades de depuración
+   ========================================================= */
 const DBG = { lines:[], notes:[] };
 function note(s){ try{ DBG.notes.push(String(s)); }catch{} }
 function dump(){
@@ -13,7 +22,9 @@ function dump(){
     '\n\n[LINEAS]\n' + DBG.lines.map((s,i)=>`${String(i).padStart(2,'0')}: ${s}`).join('\n');
 }
 
-// ===== Utilidades base =====
+/* =========================================================
+   2. Utilidades de texto / números
+   ========================================================= */
 function fixLine(s){
   if(!s) return s;
   return s
@@ -57,50 +68,15 @@ function endsWithPrice(line){
   return { namePart, price };
 }
 
-// ===== Diccionario ES+EN de comida/bebidas/postres =====
-const FOOD_HINTS = [
-  // español
-  "hamburguesa","burger","cheeseburger","tocino","bacon",
-  "alitas","boneless","costillas","ribs","arrachera","sirloin","new york","steak",
-  "pasta","alfredo","fettuccine","lasagna","lasaña","parm",
-  "pollo","chicken","tenders",
-  "quesadilla","quesadillas","tacos","fajita","fajitas","enchilada","burrito","skillet","nachos",
-  "ensalada","salad","cesar","césar",
-  "sopa","soup",
-  "mariscos","shrimp","camarones","salmon","salmón","tilapia","fish","fish & chips","fish and chips",
-  "postre","dessert","brownie","cheesecake","blondie","helado","ice cream","pastel","pie",
-  // bebidas
-  "margarita","mojito","piña colada","pina colada","martini","aperol","spritz","coctel","cocktail",
-  "cerveza","beer","vino","wine","tequila","mezcal","whisky","ron","vodka","gin","bucket",
-  "refresco","soda","coca","pepsi","sprite","fanta","limonada","lemonade","agua","jugo","iced tea","smoothie","shake","malteada",
-  // kids / sides
-  "kids","infantil","guacamole","dip","onion rings","aros","papas","fries","potato","mashed","pure","puré",
-  // brunch
-  "huevo","eggs","breakfast","desayuno","pancake","waffle","french toast"
-];
-
 function looksTextualName(s){
   if(!s) return false;
+  if (/^\d+([x×]\d+)?$/.test(s)) return false;
   const low = s.toLowerCase();
-
-  // cosas que NO son productos
-  if (/\b(sub-?total|subtotal|iva|impuesto|propina|servicio|service|descuento|cupon|cambio|cancel|anulado|cliente|clientes|mesa|mesero|tarjeta|efectivo|visa|master|amex|pago|payment|autoriz)\b/.test(low))
-    return false;
-  if (/\b(cp|c\.p\.|col|av|avenida|calle|domicilio|chihuahua)\b/i.test(low))
-    return false;
-
-  // si trae palabra de comida/bebida → sí
-  if (FOOD_HINTS.some(w => low.includes(w)))
-    return true;
-
-  // si es una frase con letras de 3+ caracteres → aceptamos
-  if (/[a-záéíóúñ]/i.test(s) && s.length >= 3)
-    return true;
-
-  return false;
+  if (/\b(sub-?total|subtotal|iva|impuesto|propina|servicio|service|descuento|cover|cupon|cambio|cancel|anulado|cliente|clientes|mesa|mesero|visa|master|amex|tarjeta|efectivo|cash|pago|payment|saldo|orden|order|nota|reimpres|autoriz)/.test(low)) return false;
+  if (/\b(cp|c\.p\.|col|av|avenida|calle|domicilio|chihuahua|tecnologico)\b/i.test(low)) return false;
+  return /[a-záéíóúñ]/i.test(s) && s.length >= 3;
 }
 
-// ===== Fecha / folio =====
 function toISODateFromText(text){
   const m = String(text||'').match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
   if(!m) return '';
@@ -109,41 +85,9 @@ function toISODateFromText(text){
   return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
 }
 
-function findDateIdx(lines){ return lines.findIndex(s=>/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s)); }
-function findTimeIdx(lines){ return lines.findIndex(s=>/(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s)); }
-function findMeseroIdx(lines){ const i = lines.findIndex(s=>/\bmesero\b|\bmesa\b|\bclientes?\b/i.test(s)); return i>=0?i:0; }
-
-function extractFolio5(lines){
-  const iD = findDateIdx(lines);
-  const iT = findTimeIdx(lines);
-  const iM = findMeseroIdx(lines);
-  const anchor = (iD>=0 || iT>=0) ? Math.max(iD,iT) : -1;
-  const from = Math.max(iM, anchor>=0?anchor:iM);
-  const to   = Math.min(lines.length-1, from+5);
-
-  const pick5 = (s)=>{
-    if (/cp\s*\d{5}/i.test(s)) return null;
-    const m = s.match(/\b(\d{5})\b/g);
-    return m ? m[m.length-1] : null;
-  };
-
-  for(let i=from;i<=to;i++){
-    const c = pick5(lines[i]);
-    if (c){ note(`Folio ventana fecha/hora @${i}: ${c}`); return c; }
-  }
-
-  for(let i=iM;i<Math.min(lines.length,iM+15);i++){
-    const s = lines[i];
-    if (/\b(cp|col|av|calle)\b/i.test(s)) continue;
-    const m = s.match(/\b(\d{5})\b/);
-    if (m){ note(`Folio fallback bloque mesero @${i}: ${m[1]}`); return m[1]; }
-  }
-
-  note('Folio no encontrado');
-  return null;
-}
-
-// ===== Ventana de productos =====
+/* =========================================================
+   3. Ventana de productos (parser clásico)
+   ========================================================= */
 function findProductsWindow(lines){
   const start = lines.findIndex(l=>{
     const end = endsWithPrice(l); if(!end) return false;
@@ -164,13 +108,12 @@ function findProductsWindow(lines){
   return {start,end};
 }
 
-// ===== Parseo tolerante =====
 function parseItems(lines, win){
   if (win.start<0 || win.end<0 || win.end<win.start) return [];
   const out = [];
 
   function push(name, price){
-    if(!name) return;
+    if(!name || price==null || price<=0) return;
     let qty = 1;
     const qm = name.match(/(?:^|\s)(?:x\s*)?(\d{1,2})(?:\s*[x×])?(?:\s|$)/i);
     if (qm) qty = Math.max(1, parseInt(qm[1],10));
@@ -179,35 +122,17 @@ function parseItems(lines, win){
       .replace(/\s{2,}/g,' ')
       .replace(/[.:,-]\s*$/,'')
       .trim();
-    if (!looksTextualName(name)) {
-      note(`Descartado no-producto: "${name}"`);
-      return;
-    }
-    out.push({ name, qty, price: price ?? 0 });
+    if (!looksTextualName(name)) { note(`Descartado no-item: "${name}"`); return; }
+    out.push({ name, qty, price });
   }
 
   for(let i=win.start;i<=win.end;i++){
-    const line = lines[i];
-    const end  = endsWithPrice(line);
-
-    if (end){
-      // línea normal: PRODUCTO .... 199.00
-      push(end.namePart, end.price);
-      continue;
-    }
-
-    // línea SIN precio pero suena a comida → ver la siguiente
-    if (looksTextualName(line)){
-      const next = lines[i+1] || '';
-      const endNext = endsWithPrice(next);
-      if (endNext){
-        push(line, endNext.price);
-        i++; // saltamos la línea de precio
-      } else {
-        // lo guardamos sin precio, luego registrar.js le asigna puntos
-        push(line, 0);
-      }
-    }
+    const l = lines[i];
+    const end = endsWithPrice(l);
+    if(!end) continue;
+    const left = end.namePart;
+    if (!/[a-z]/i.test(left)) continue;
+    push(left, end.price);
   }
 
   // compactar
@@ -215,88 +140,101 @@ function parseItems(lines, win){
   for(const it of out){
     const j = comp.findIndex(x => x.name.toLowerCase() === it.name.toLowerCase());
     if (j>=0){
-      comp[j].qty   += it.qty;
-      comp[j].price = +(comp[j].price + (it.price||0)).toFixed(2);
-    } else {
-      comp.push({...it});
-    }
+      comp[j].qty += it.qty;
+      comp[j].price = +(comp[j].price + it.price).toFixed(2);
+    } else comp.push({...it});
   }
-  note(`Items detectados (tolerante): ${comp.length}`);
+  note(`Items (parser clásico): ${comp.length}`);
   return comp;
 }
 
-// ===== TOTAL =====
+/* =========================================================
+   4. TOTAL (parser clásico)
+   ========================================================= */
 function detectGrandTotal(lines){
-  const isCard = s => /\b(visa|master|amex|tarjeta|card)\b/i.test(s);
+  const isCard = (s)=>/\b(visa|master|amex|tarjeta|card)\b/i.test(s);
 
-  // 1) si hay propina, buscar TOTAL después
+  // 1) Después de propina
   let propIdx = -1;
-  for(let i=0;i<lines.length;i++){
-    if (/propina|servicio|service/i.test(lines[i])) propIdx = i;
-  }
+  for(let i=0;i<lines.length;i++) if (/propina|servicio|service/i.test(lines[i])) propIdx = i;
   if (propIdx>=0){
     for(let j=lines.length-1;j>propIdx;j--){
       const l = lines[j];
       if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)){
         const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-        if (mm && mm.length){
-          const v = normalizeNum(mm[mm.length-1]);
-          if (v!=null){ note(`Total tras propina: ${v}`); return v; }
-        }
+        if (mm && mm.length){ const v = normalizeNum(mm[mm.length-1]); if(v!=null){ note(`Total tras propina: ${v}`); return v; } }
       }
     }
   }
-
-  // 2) último TOTAL válido
+  // 2) Último total
   for(let i=lines.length-1;i>=0;i--){
     const l = lines[i];
     if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)){
       const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-      if (mm && mm.length){
-        const v = normalizeNum(mm[mm.length-1]);
-        if (v!=null){ note(`Total por último TOTAL: ${v}`); return v; }
-      }
+      if (mm && mm.length){ const v = normalizeNum(mm[mm.length-1]); if(v!=null){ note(`Total por último TOTAL: ${v}`); return v; } }
     }
   }
-
-  // 3) subtotal + propina
+  // 3) Subtotal + propina
   let sub=null, tip=null;
   for(const l of lines){
     if (/sub-?total|subtotal/i.test(l)){
       const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
       if (mm) sub = normalizeNum(mm[mm.length-1]);
-    } else if (/propina|servicio|service/i.test(l)){
+    }else if (/propina|servicio|service/i.test(l)){
       const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
       if (mm) tip = normalizeNum(mm[mm.length-1]);
     }
   }
-  if (sub!=null && tip!=null){
-    const t = +(sub + tip).toFixed(2);
-    note(`Total subtotal+propina: ${t}`);
-    return t;
-  }
+  if (sub!=null && tip!=null){ const t=+(sub+tip).toFixed(2); note(`Total subtotal+propina: ${t}`); return t; }
 
-  // 4) máximo importe
-  const nums = [];
+  // 4) Mayor importe
+  const nums=[];
   lines.forEach(l=>{
     if (isCard(l)) return;
     const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-    if (mm) mm.forEach(v => {
-      const p = normalizeNum(v);
-      if (p!=null) nums.push(p);
-    });
+    if (mm) mm.forEach(v=>{ const p = normalizeNum(v); if(p!=null) nums.push(p); });
   });
-  if (nums.length){
-    const t = Math.max(...nums);
-    note(`Total por máximo importe: ${t}`);
-    return t;
-  }
+  if (nums.length){ const t=Math.max(...nums); note(`Total por máximo importe: ${t}`); return t; }
 
   note('Total no encontrado');
   return null;
 }
 
-// ===== Preprocesado imagen =====
+/* =========================================================
+   5. Folio de 5 dígitos
+   ========================================================= */
+function findDateIdx(lines){ return lines.findIndex(s=>/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s)); }
+function findTimeIdx(lines){ return lines.findIndex(s=>/(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s)); }
+function findMeseroIdx(lines){ const i = lines.findIndex(s=>/\bmesero\b|\bmesa\b|\bclientes?\b/i.test(s)); return i>=0?i:0; }
+
+function extractFolio5(lines){
+  const iD = findDateIdx(lines);
+  const iT = findTimeIdx(lines);
+  const iM = findMeseroIdx(lines);
+  const anchor = (iD>=0 || iT>=0) ? Math.max(iD,iT) : -1;
+  const from = Math.max(iM, anchor>=0?anchor:iM);
+  const to   = Math.min(lines.length-1, from+5);
+  const pick5 = (s)=>{
+    if (/cp\s*\d{5}/i.test(s)) return null;
+    const m = s.match(/\b(\d{5})\b/g);
+    return m ? m[m.length-1] : null;
+  };
+  for(let i=from;i<=to;i++){
+    const c = pick5(lines[i]); if (c){ note(`Folio ventana fecha/hora @${i}: ${c}`); return c; }
+  }
+  for(let i=iM;i<Math.min(lines.length,iM+15);i++){
+    const s = lines[i];
+    if (/\b(cp|col|av|calle)\b/i.test(s)) continue;
+    const m = s.match(/\b(\d{5})\b/);
+    if (m){ note(`Folio fallback bloque mesero @${i}: ${m[1]}`); return m[1]; }
+  }
+  note('Folio no encontrado');
+  return null;
+}
+
+/* =========================================================
+   6. Preprocesado de imagen
+   ========================================================= */
 async function preprocess(file){
   const bmp = await createImageBitmap(file);
   const targetH = 2400;
@@ -306,39 +244,30 @@ async function preprocess(file){
     height: Math.round(bmp.height*scale)
   });
   const ctx = c.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.22) brightness(1.06)';
+  ctx.filter = 'grayscale(1) contrast(1.18) brightness(1.07)';
   ctx.drawImage(bmp, 0, 0, c.width, c.height);
 
-  // si hay OpenCV, mejoramos
+  // Si hay OpenCV, intentamos binarizar
   if (typeof cv !== 'undefined' && cv?.Mat){
-    let src = cv.imread(c);
-    let gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
     try{
-      const clahe = new cv.CLAHE(2.0, new cv.Size(8,8));
-      clahe.apply(gray, gray);
-      clahe.delete();
-    }catch{}
-    let bw = new cv.Mat();
-    cv.adaptiveThreshold(gray, bw, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 35, 10);
-    try{
-      let coords = cv.findNonZero(cv.bitwise_not(bw));
-      let rect = cv.minAreaRect(coords);
-      let angle = rect.angle;
-      if (angle < -45) angle += 90;
-      const rot = cv.getRotationMatrix2D(new cv.Point(bw.cols/2, bw.rows/2), angle, 1);
-      let rotated = new cv.Mat();
-      cv.warpAffine(bw, rotated, rot, new cv.Size(bw.cols, bw.rows), cv.INTER_LINEAR, cv.BORDER_REPLICATE);
-      bw.delete(); bw = rotated; rot.delete();
-      coords?.delete?.();
-    }catch{}
-    cv.imshow(c, bw);
-    src.delete(); gray.delete(); bw.delete();
+      let src = cv.imread(c);
+      let gray = new cv.Mat();
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+      let bw = new cv.Mat();
+      cv.adaptiveThreshold(gray, bw, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 35, 10);
+      cv.imshow(c, bw);
+      src.delete(); gray.delete(); bw.delete();
+    }catch(e){
+      console.warn('OpenCV no aplicado:', e);
+    }
   }
+
   return c;
 }
 
-// ===== Tesseract wrapper =====
+/* =========================================================
+   7. Tesseract helpers
+   ========================================================= */
 async function ocrCanvas(canvas, { psm=6 } = {}){
   const blob = await new Promise(res=>canvas.toBlob(res, 'image/jpeg', 0.96));
   const { data } = await Tesseract.recognize(
@@ -353,11 +282,89 @@ async function ocrCanvas(canvas, { psm=6 } = {}){
   return data;
 }
 
-// ===== Proceso principal =====
+/* =========================================================
+   8. IA: identificar productos con OpenAI
+   ========================================================= */
+async function identificarProductosConIA(textoOCR){
+  if (!OPENAI_API_KEY || OPENAI_API_KEY.startsWith("PON_AQUI")) {
+    note('IA desactivada: no hay API KEY');
+    return [];
+  }
+
+  const prompt = `
+Eres un asistente que extrae información de tickets de restaurantes (Applebee's México).
+Del siguiente texto de ticket identifica SOLO los productos consumidos.
+Reglas:
+- Ignora subtotal, total, IVA, propina, formas de pago.
+- Si no hay cantidad explícita, usa 1.
+- Si ves "2 LIMONADA 59.00" es cantidad 2, precio 59.00 c/u.
+- Devuelve SOLO JSON válido. Sin texto antes ni después.
+- Si un precio parece total de la cuenta, NO lo pongas como producto.
+
+Formato:
+[
+  {"producto": "Nombre", "cantidad": 1, "precio": 59.00}
+]
+
+Ticket:
+${textoOCR}
+  `.trim();
+
+  try{
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.15,
+        response_format: { type: "json_object" } // nos aseguramos JSON
+      })
+    });
+
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content || "{}";
+    // Como pedimos json_object, viene tipo { "items": [...] }
+    let parsed = {};
+    try{ parsed = JSON.parse(raw); }catch(e){ return []; }
+
+    // Aceptamos 2 formatos:
+    // a) { "items": [...] }
+    // b) [ ... ]
+    let itemsIA = [];
+    if (Array.isArray(parsed)) {
+      itemsIA = parsed;
+    } else if (Array.isArray(parsed.items)) {
+      itemsIA = parsed.items;
+    }
+
+    // Normalizamos
+    itemsIA = itemsIA.map(it => ({
+      name: it.producto || it.name || it.descripcion || 'Producto',
+      qty: Number(it.cantidad || it.qty || 1),
+      price: Number(it.precio || it.price || 0)
+    })).filter(x => x.name && x.qty>0);
+
+    note(`IA devolvió ${itemsIA.length} productos`);
+    return itemsIA;
+  }catch(e){
+    console.error('Error llamando a OpenAI:', e);
+    note('IA falló, usando parser clásico');
+    return [];
+  }
+}
+
+/* =========================================================
+   9. Proceso principal
+   ========================================================= */
 async function processTicket(file){
+  // 1) preprocesa
   const pre = await preprocess(file);
 
-  // zona inferior (totales)
+  // 2) OCR completo + zona inferior
   const h = pre.height, w = pre.width;
   const y0 = Math.max(0, Math.floor(h*0.58));
   const bot = document.createElement('canvas');
@@ -369,42 +376,61 @@ async function processTicket(file){
     ocrCanvas(pre,  { psm: 4 }),
   ]);
 
-  const totalText = (totals.text||'').trim();
-  const fullText  = (full.text||'').trim();
+  const fullText  = (full.text  || '').trim();
+  const totalText = (totals.text|| '').trim();
 
+  // 3) parser clásico
   const lines = splitLines(fullText);
   const win   = findProductsWindow(lines);
-  const items = parseItems(lines, win);
+  const itemsClasico = parseItems(lines, win);
 
-  let total = detectGrandTotal(lines.concat(splitLines(totalText)));
-  if (total==null && items.length){
-    total = +(items.reduce((a,it)=> a + (it.price||0)*(it.qty||1), 0).toFixed(2));
-    note(`Total por suma de items: ${total}`);
+  // 4) total clásico
+  const mergedLines = lines.concat(splitLines(totalText));
+  let total = detectGrandTotal(mergedLines);
+  if (total==null && itemsClasico.length){
+    total = +(itemsClasico.reduce((a,it)=> a + (it.price||0)*(it.qty||1), 0).toFixed(2));
+    note(`Total por suma de items (clásico): ${total}`);
   }
 
   const folio = extractFolio5(lines);
   const fecha = toISODateFromText(fullText);
 
+  // 5) IA para mejorar productos
+  const itemsIA = await identificarProductosConIA(fullText);
+
+  // 6) Elegimos mejor lista:
+  //    - si IA detectó al menos 1 → usamos IA
+  //    - si no, lo clásico
+  const finalItems = (itemsIA && itemsIA.length) ? itemsIA : itemsClasico;
+
+  // 7) Depurar
   dump();
-  return { folio, fecha, total, items, ocrText: fullText };
+
+  return {
+    folio,
+    fecha,
+    total,
+    items: finalItems,
+    ocrText: fullText
+  };
 }
 
-// ===== Botón “Procesar ticket (OCR)” =====
+/* =========================================================
+   10. Integración con tu botón
+   ========================================================= */
 async function onClickProcesar(){
-  const input = document.getElementById('ticketFile');
+  const input = document.getElementById('ticketFile') || document.getElementById('ticketImage');
   const file  = input?.files?.[0];
-  if (!file){
-    alert('Sube o toma una foto del ticket primero.');
-    return;
-  }
+  if (!file){ alert('Sube o toma una foto del ticket primero.'); return; }
 
   const statusEl = document.getElementById('ocrStatus');
   if (statusEl){ statusEl.textContent = '🕐 Escaneando ticket…'; }
 
   try{
-    DBG.notes=[]; DBG.lines=[];
+    DBG.notes = []; DBG.lines = [];
     const res = await processTicket(file);
 
+    // Rellenar UI
     const iNum   = document.getElementById('inputTicketNumero');
     const iFecha = document.getElementById('inputTicketFecha');
     const iTotal = document.getElementById('inputTicketTotal');
@@ -413,14 +439,9 @@ async function onClickProcesar(){
     if (iFecha) iFecha.value = res.fecha || '';
     if (iTotal) { iTotal.value = res.total!=null ? res.total.toFixed(2) : ''; iTotal.disabled = false; }
 
-    // mandamos los productos al registrar.js
-    const payload = (res.items || []).map(it => ({
-      name: it.name,
-      qty: it.qty || 1,
-      price: typeof it.price === 'number' ? it.price : null
-    }));
-    window.__ocrProductos = payload;
-    document.dispatchEvent(new CustomEvent('ocr:productos', { detail: payload }));
+    // Disparar a registrar.js
+    window.__ocrProductos = res.items || [];
+    document.dispatchEvent(new CustomEvent('ocr:productos', { detail: window.__ocrProductos }));
 
     if (statusEl){
       const okFolio = (res.folio && /^\d{5}$/.test(res.folio));
@@ -434,8 +455,8 @@ async function onClickProcesar(){
   }catch(e){
     console.error(e);
     const statusEl = document.getElementById('ocrStatus');
-    if (statusEl) statusEl.textContent = '❌ No pude leer el ticket. Intenta con mejor iluminación y encuadre recto.';
-    alert('No se pudo leer el ticket. Prueba con más luz, sin sombras y acercando el ticket a la cámara.');
+    if (statusEl) statusEl.textContent = '❌ No pude leer el ticket. Intenta con mejor iluminación.';
+    alert('No se pudo leer el ticket. Prueba con más luz, sin sombras y más recto.');
   }
 }
 
