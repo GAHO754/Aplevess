@@ -79,6 +79,7 @@ function toISODateFromText(text){
    ====================================================== */
 
 // lista negra “aprendida” — aquí puedes ir metiendo lo que se cuele
+// lista negra “aprendida” — aquí puedes ir metiendo lo que se cuele
 const BAD_PATTERNS = [
   'armuyo rest',
   'reimpresion',
@@ -97,8 +98,15 @@ const BAD_PATTERNS = [
   'impuesto',
   'iva',
   'auth',
-  'visa'
+  'visa',
+  'regimen fiscal',
+  'persona moral',
+  'gracias por su visita',
+  'gracias por tu visita',
+  'visitanos',
+  'te esperamos pronto'
 ];
+
 
 // no-productos por palabras clave
 const NOT_PRODUCT_RX =
@@ -468,3 +476,4 @@ async function onClickProcesar(){
 
 // botón
 document.getElementById('btnProcesarTicket')?.addEventListener('click', onClickProcesar);
+
