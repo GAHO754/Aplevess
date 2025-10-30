@@ -381,10 +381,6 @@ async function onClickProcesar(){
     console.error(e);
     const statusEl = document.getElementById('ocrStatus');
     let msg = '❌ No pude leer el ticket.';
-    if (e.message === 'IMG_LOW_RES') msg = '❌ La foto salió muy chica o borrosa. Tómala otra vez, más cerca y con luz.';
-    if (e.message === 'NO_FOLIO')    msg = '❌ No pude ver el número de ticket (5 dígitos). Vuelve a tomar la foto apuntando a la zona del número.';
-    if (e.message === 'NO_FECHA')    msg = '❌ No pude ver la fecha. Vuelve a tomar la foto apuntando a la zona de la fecha.';
-    if (e.message === 'NO_ITEMS')    msg = '❌ No vi los platillos/bebidas. Tómala otra vez más cerca donde se lean los nombres y los precios.';
     if (e.message === 'NO_TOTAL')    msg = '❌ No vi el total. Tómala otra vez apuntando al “Total”.';
     if (statusEl) statusEl.textContent = msg;
     alert(msg);
