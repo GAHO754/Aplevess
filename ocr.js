@@ -104,7 +104,9 @@ const BAD_PATTERNS = [
   'gracias por su visita',
   'gracias por tu visita',
   'visitanos',
-  'te esperamos pronto'
+  'te esperamos pronto',
+  'te esperamos manana!!!',
+  'sugerenciastapplebeesmx .com'
 ];
 
 
@@ -476,4 +478,5 @@ async function onClickProcesar(){
 
 // botón
 document.getElementById('btnProcesarTicket')?.addEventListener('click', onClickProcesar);
+
 
