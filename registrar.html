@@ -6,7 +6,8 @@
   <title>Registrar compra</title>
   <link rel="icon" type="image/png" sizes="32x32" href="manzanas.png">
   <link rel="stylesheet" href="registrar.css" />
-  <!-- OCR -->
+
+  <!-- OCR (Tesseract) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body class="bg-animated">
@@ -17,11 +18,12 @@
       <a class="btn-secondary" href="panel.html">← Regresar</a>
     </div>
   </header>
-
+  
   <main class="page">
     <section class="card panel-option" id="subida-ticket">
       <h2>📸 Sube primero tu ticket (obligatorio)</h2>
 
+      <!-- =========== SUBIDA DE IMAGEN =========== -->
       <div class="upload-area">
         <label for="ticketFile">📎 Imagen del ticket</label>
 
@@ -29,6 +31,7 @@
           <p>Arrastra y suelta la imagen aquí</p>
         </div>
 
+        <!-- input real -->
         <input type="file" id="ticketFile" accept="image/*" style="display:none;" />
 
         <div class="upload-actions">
@@ -37,7 +40,7 @@
         </div>
       </div>
 
-      <!-- Modal cámara -->
+      <!-- =========== MODAL CÁMARA =========== -->
       <div class="camera-modal" id="cameraModal" aria-hidden="true">
         <div class="camera-box">
           <div class="camera-header">
@@ -51,7 +54,7 @@
         </div>
       </div>
 
-      <!-- Acciones OCR / Edición -->
+      <!-- =========== ACCIONES OCR =========== -->
       <div class="actions-row">
         <button id="btnProcesarTicket" type="button" class="btn-cta">
           <span>Procesar ticket (OCR)</span>
@@ -59,9 +62,23 @@
       </div>
       <div id="ocrStatus" class="validacion-msg"></div>
 
+      <!-- Panel de depuración OCR (lo agregamos aquí) -->
+      <pre id="ocrDebug" style="
+        background: rgba(0,0,0,.35);
+        border: 1px solid rgba(255,255,255,.08);
+        padding: 10px;
+        border-radius: 10px;
+        font-size: 12px;
+        max-height: 200px;
+        overflow: auto;
+        white-space: pre-wrap;
+        margin-top: 10px;
+        display: none;
+      "></pre>
+
       <hr class="divider">
 
-      <!-- FORM -->
+      <!-- =========== FORMULARIO DE DATOS =========== -->
       <div class="upload-area">
         <div class="grid-2">
           <div>
@@ -122,7 +139,7 @@
   <!-- OpenCV (auto enderezado) -->
   <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 
-  <!-- Lógica -->
+  <!-- Lógica tuya -->
   <script src="registrar.js"></script>
   <script src="ocr.js"></script>
 
@@ -130,14 +147,30 @@
   <script>
     const dz = document.getElementById('dropzone');
     const fileInput = document.getElementById('ticketFile');
+
+    // click en zona = abrir input
     dz.addEventListener('click', () => fileInput.click());
-    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+
+    // arrastrar
+    dz.addEventListener('dragover', e => {
+      e.preventDefault();
+      dz.classList.add('drag');
+    });
     dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
     dz.addEventListener('drop', e => {
       e.preventDefault();
       dz.classList.remove('drag');
-      if (e.dataTransfer.files?.length) fileInput.files = e.dataTransfer.files;
+      if (e.dataTransfer.files?.length) {
+        fileInput.files = e.dataTransfer.files;
+      }
     });
+
+    // botón "subir archivo"
+    document.getElementById('btnSeleccionarArchivo')?.addEventListener('click', () => {
+      fileInput.click();
+    });
+
+    // aquí tú ya tenías tu lógica de abrir cámara en registrar.js
   </script>
 </body>
 </html>
