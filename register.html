@@ -12,11 +12,38 @@
     <div class="form-card">
       <h1>Crear Cuenta</h1>
 
-      <input type="text" id="regName" placeholder="Nombre completo" autocomplete="name" />
-      <input type="email" id="regEmail" placeholder="Correo electrónico" autocomplete="email" />
-      <input type="tel" id="regPhone" placeholder="Teléfono (10 dígitos, opcional)" inputmode="numeric" />
-      <input type="password" id="regPassword" placeholder="Contraseña" autocomplete="new-password" />
-      <!-- 👇 SIN onclick -->
+      <!-- Nombre -->
+      <div class="field-group">
+        <input type="text" id="regName" placeholder="Nombre completo" autocomplete="name" />
+        <span class="tooltip">❓
+          <span class="tooltiptext">Escribe tu nombre y apellidos tal como aparecerán en tu cuenta.</span>
+        </span>
+      </div>
+
+      <!-- Correo -->
+      <div class="field-group">
+        <input type="email" id="regEmail" placeholder="Correo electrónico" autocomplete="email" />
+        <span class="tooltip">❓
+          <span class="tooltiptext">Usa un correo válido, lo usaremos para recuperar tu cuenta.</span>
+        </span>
+      </div>
+
+      <!-- Teléfono -->
+      <div class="field-group">
+        <input type="tel" id="regPhone" placeholder="Teléfono (10 dígitos, opcional)" inputmode="numeric" />
+        <span class="tooltip">❓
+          <span class="tooltiptext">Opcional. Si lo pones, podremos avisarte de promociones.</span>
+        </span>
+      </div>
+
+      <!-- Contraseña -->
+      <div class="field-group">
+        <input type="password" id="regPassword" placeholder="Contraseña" autocomplete="new-password" />
+        <span class="tooltip">❓
+          <span class="tooltiptext">Mínimo 8 caracteres. Mezcla mayúsculas, números y símbolos.</span>
+        </span>
+      </div>
+
       <button id="btnRegister">Crear Cuenta</button>
 
       <p class="link">
@@ -27,9 +54,9 @@
 
   <!-- Firebase (compat) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-<script src="firebase-config.js"></script>
-<script src="auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="auth.js"></script>
 </body>
 </html>
