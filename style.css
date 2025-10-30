@@ -107,6 +107,7 @@ button.secondary:hover {
 }
 
 /* ===== Tooltip global para todos los formularios ===== */
+/* ===== Tooltips compatibles con móviles ===== */
 .field-group {
   display: flex;
   align-items: center;
@@ -118,18 +119,21 @@ button.secondary:hover {
   flex: 1;
 }
 
+/* Ícono ❓ */
 .tooltip {
   position: relative;
-  cursor: help;
-  color: #e91e63;  /* tono tipo Applebee's */
+  cursor: pointer;
+  color: #e91e63;
   font-weight: bold;
   font-size: 16px;
   line-height: 1;
+  user-select: none;
 }
 
+/* Caja del texto */
 .tooltip .tooltiptext {
   visibility: hidden;
-  width: 210px;
+  width: 220px;
   background-color: #333;
   color: #fff;
   text-align: left;
@@ -137,15 +141,17 @@ button.secondary:hover {
   padding: 6px 8px;
   position: absolute;
   z-index: 10;
-  top: 130%; /* aparece un poco abajo */
+  top: 130%; /* aparece debajo */
   left: 50%;
   transform: translateX(-50%);
   opacity: 0;
-  transition: opacity .25s ease;
+  transition: opacity 0.25s ease;
   font-size: 12.5px;
   line-height: 1.3;
+  pointer-events: none;
 }
 
+/* Flechita */
 .tooltip .tooltiptext::after {
   content: "";
   position: absolute;
@@ -157,7 +163,18 @@ button.secondary:hover {
   border-color: transparent transparent #333 transparent;
 }
 
+/* Mostrar tooltip al pasar el mouse */
 .tooltip:hover .tooltiptext {
   visibility: visible;
   opacity: 1;
+  pointer-events: auto;
 }
+
+/* Mostrar tooltip en móviles (cuando tiene la clase activa) */
+.tooltip.active .tooltiptext {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+
