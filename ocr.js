@@ -1,5 +1,5 @@
 /* =========================================================
-   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s (mejorado)
+   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s (mejorado + fix móvil)
    =========================================================
    Flujo:
    1. Tomamos la imagen (file input o cámara)
@@ -24,8 +24,11 @@ function dbgDump() {
 /* ==================================================
    1. Config IA
    ================================================== */
+/**
+ * ⚠️ NO SUBAS TU API KEY A GITHUB
+ */
 const OPENAI_API_KEY = ""; // <--- si no hay, no pasa nada
-const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || "";
+const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // ej. "https://tu-funcion.vercel.app/api/ocr"
 
 /* ==================================================
    2. Utilidades base
@@ -45,6 +48,38 @@ function splitLines(text) {
     .filter(Boolean);
   DBG.lines = arr.slice();
   return arr;
+}
+
+// Une líneas que en móvil vienen partidas en 2: nombre arriba y precio abajo
+function mergeBrokenPriceLines(lines) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+
+    // caso típico móvil: nombre → abajo solo precio
+    if (next && /^\$?\s*\d[\d.,]*(?:\s*mxn)?$/i.test(next.trim())) {
+      if (looksLikeFoodOrDrink(cur)) {
+        const merged = `${cur} ${next.trim()}`;
+        out.push(merged);
+        i++; // saltamos la línea del precio porque ya la usamos
+        continue;
+      }
+    }
+
+    // segundo formato: "$ 259.00 MXN"
+    if (next && /^\$?\s*\d[\d.,]*(?:\s*mxn)?$/i.test(next.replace(/\s+/g, " ").trim())) {
+      if (looksLikeFoodOrDrink(cur)) {
+        const merged = `${cur} ${next.replace(/\s+/g, " ").trim()}`;
+        out.push(merged);
+        i++;
+        continue;
+      }
+    }
+
+    out.push(cur);
+  }
+  return out;
 }
 
 function normalizeNum(raw) {
@@ -123,7 +158,7 @@ const NOT_PRODUCT_RX = new RegExp(
 const CODEY_RX = /^(?:[>-]{1,3}\s*)?[A-Z]{2,6}\d{2,6}[A-Z0-9\-]*$/;
 
 /* ==================================================
-   4. Detección de ventana de productos (local)
+   4. Detección de productos (local)
    ================================================== */
 function looksLikeFoodOrDrink(nameRaw) {
   if (!nameRaw) return false;
@@ -265,7 +300,7 @@ function detectGrandTotal(lines) {
 }
 
 function extractFolio(lines) {
-  // 1) tu lógica de 5 dígitos cerca de mesa/mesero/fecha
+  // 1) lógica de 5 dígitos cerca de mesa/mesero/fecha
   const isDate = (s) => /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s);
   const isTime = (s) => /(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s);
   const iD = lines.findIndex(isDate);
@@ -320,6 +355,7 @@ async function preprocessImage(file) {
   ctx.filter = "grayscale(1) contrast(1.25) brightness(1.05)";
   ctx.drawImage(bmp, 0, 0, c.width, c.height);
 
+  // si hay OpenCV, lo mejoramos tantito
   if (typeof cv !== "undefined" && cv?.Mat) {
     try {
       let src = cv.imread(c);
@@ -355,10 +391,12 @@ async function runTesseract(canvas) {
    8. IA con OpenAI
    ================================================== */
 async function callOpenAI(rawText) {
+  // si no hay key ni proxy, no hacemos nada
   if (!OPENAI_API_KEY && !OPENAI_PROXY_ENDPOINT) {
     throw new Error("No hay API KEY ni proxy configurado");
   }
 
+  // prompt muy dirigido
   const sys = `Eres un parser de tickets de restaurante Applebee's de México.
 Debes devolver SIEMPRE JSON válido:
 {
@@ -375,9 +413,9 @@ Reglas:
 - Si no ves el folio, pon "".
 - Convierte la fecha dd/mm/aaaa a aaaa-mm-dd.
 - El total es el TOTAL de consumo.`;
-
   const user = `TEXTO OCR:\n${rawText}\n\nDevuélveme SOLO el JSON, sin explicación.`;
 
+  // 1) si hay proxy configurado
   if (OPENAI_PROXY_ENDPOINT) {
     const resp = await fetch(OPENAI_PROXY_ENDPOINT, {
       method: "POST",
@@ -388,6 +426,7 @@ Reglas:
     return await resp.json();
   }
 
+  // 2) llamada directa a OpenAI
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -411,6 +450,7 @@ Reglas:
   }
 
   const data = await resp.json();
+  // el JSON ya viene en data.choices[0].message.content
   const content = data.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content);
 }
@@ -458,7 +498,10 @@ async function processTicketWithIA(file) {
     }
 
     // 4) si IA no dio todo, completamos con parser local
-    const lines = splitLines(text);
+    let lines = splitLines(text);
+    // 👇 FIX MÓVIL: junta líneas nombre + precio
+    lines = mergeBrokenPriceLines(lines);
+
     const win = findProductsWindow(lines);
     const localItems = parseItemsLocal(lines, win);
     const localTotal = detectGrandTotal(lines);
@@ -497,12 +540,14 @@ async function processTicketWithIA(file) {
       iTotal.disabled = false;
     }
 
+    // construir el formato que espera registrar.js
     const payload = finalItems.map(it => ({
       name: it.name,
       qty: it.qty || 1,
       price: typeof it.price === "number" ? it.price : null
     }));
 
+    // avisar a registrar.js
     document.dispatchEvent(new CustomEvent("ocr:productos", { detail: payload }));
 
     if (statusEl) {
