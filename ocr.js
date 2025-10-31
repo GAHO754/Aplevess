@@ -1,12 +1,12 @@
 /* =========================================================
-   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s
+   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s (mejorado)
    =========================================================
    Flujo:
    1. Tomamos la imagen (file input o cámara)
    2. Preprocesamos (escala + contraste + opcional OpenCV)
    3. Tesseract saca el TEXTO
    4. (IA) Le pedimos a OpenAI que nos regrese JSON limpio
-   5. Si IA falla → parser local
+   5. Si IA falla → parser local mejorado
    6. Mandamos los productos a registrar.js con `ocr:productos`
    ========================================================= */
 
@@ -24,18 +24,8 @@ function dbgDump() {
 /* ==================================================
    1. Config IA
    ================================================== */
-/**
- * ⚠️ NO SUBAS TU API KEY A GITHUB
- * Para probar localmente puedes pegarla aquí
- * y luego borrarla antes de subir.
- *
- * Opciones para producción:
- * - window.OPENAI_API_KEY = "sk-xxxxx" (inyectado por otro script que NO está en el repo)
- * - Llamar a tu propio endpoint /api/ai-ocr que tenga la key
- */
-const OPENAI_API_KEY = window.OPENAI_API_KEY || ""; // <--- BORRAR ANTES DE SUBIR
-// Si vas a usar endpoint propio, ponlo aquí (si esto está, se usa este en vez del fetch directo a OpenAI)
-const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // ej. "https://tu-funcion.vercel.app/api/ocr"
+const OPENAI_API_KEY = ""; // <--- si no hay, no pasa nada
+const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || "";
 
 /* ==================================================
    2. Utilidades base
@@ -72,8 +62,12 @@ function normalizeNum(raw) {
   return Number.isFinite(n) ? +n.toFixed(2) : null;
 }
 
+/**
+ * Detecta si una línea termina con precio (v1)
+ * Ej: "BONELESS BUFFALO 199.00"
+ */
 function endsWithPrice(line) {
-  const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*$/);
+  const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*(?:mxn)?$/i);
   if (!m) return null;
   const price = normalizeNum(m[1]);
   if (price == null) return null;
@@ -81,24 +75,46 @@ function endsWithPrice(line) {
   return { namePart, price };
 }
 
+/**
+ * Detecta líneas con cantidad + descripción + precio
+ * Ej:
+ * "2 BONELESS BUFFALO 199.00"
+ * "BONELESS BUFFALO x2 $199.00"
+ */
+function parseQtyNamePrice(line) {
+  // 1) qty al principio
+  let m = line.match(/^(\d{1,2})\s+(.+?)\s+(\$?\d[\d.,]*(?:mxn)?)$/i);
+  if (m) {
+    const qty = parseInt(m[1], 10);
+    const name = m[2].trim();
+    const price = normalizeNum(m[3]);
+    if (price != null) return { qty, name, price };
+  }
+  // 2) nombre + x2 + precio
+  m = line.match(/^(.+?)\s+x\s*(\d{1,2})\s+(\$?\d[\d.,]*(?:mxn)?)$/i);
+  if (m) {
+    const name = m[1].trim();
+    const qty = parseInt(m[2], 10);
+    const price = normalizeNum(m[3]);
+    if (price != null) return { qty, name, price };
+  }
+  return null;
+}
+
 /* ==================================================
    3. Listas para filtrar líneas NO-producto
    ================================================== */
 const NOT_PRODUCT_RX = new RegExp(
   [
-    // datos fiscales / leyendas
     "regimen fiscal",
     "r.f.c", "rfc", "iva", "impt\\.?", "impuesto", "subtotal", "sub-?total",
     "forma de pago", "metodo de pago", "cambio", "saldo", "total", "visa", "master", "amex",
-    "propina", "service", "servicio",
-    // encabezados / dirección
+    "propina", "service", "servicio", "cargo por servicio",
     "av\\.", "avenida", "calle", "col\\.", "colonia", "cp\\s*\\d{5}", "chihuahua", "cd juarez",
-    // operativos
     "mesero", "mesa", "clientes?", "reimpresion", "reimpresi[oó]n", "no\\.", "nota", "orden", "ticket",
-    // despedidas
     "gracias por su visita", "gracias por tu visita", "vuelva pronto",
-    // timbres
-    "folio fiscal", "cfd[ii]", "sello", "cadena original"
+    "folio fiscal", "cfd[ii]", "sello", "cadena original",
+    "pago con", "efectivo", "tarjeta", "cambio", "m.n.", "mxn"
   ].join("|"),
   "i"
 );
@@ -113,16 +129,15 @@ function looksLikeFoodOrDrink(nameRaw) {
   if (!nameRaw) return false;
   const n = nameRaw.toLowerCase();
   if (NOT_PRODUCT_RX.test(n)) return false;
-  // palabras que sí queremos
   const OK = [
     // bebidas
     "limonada", "mojito", "margarita", "martini", "paloma", "piña colada", "pina colada",
-    "coca", "pepsi", "refresco", "agua", "jugo", "iced tea", "te shake", "shake",
-    // platillos
+    "coca", "pepsi", "refresco", "agua", "jugo", "iced tea", "te shake", "shake", "lemonade",
+    // platillos applebee’s / grill
     "burger", "hamburguesa", "chicken", "pollo", "salad", "ensalada",
     "tacos", "sirloin", "arrachera", "buffalo", "salmon", "pasta", "fajita",
-    // entradas
-    "boneless", "alitas", "wings", "nachos", "dip", "sampler", "quesadilla",
+    "steak", "rib", "ribs", "boneless", "quesadilla", "sampler", "dip",
+    "nachos", "wings", "alitas", "combo", "trio", "shrimp",
     // postres
     "brownie", "cheesecake", "postre", "dessert", "helado"
   ];
@@ -133,6 +148,8 @@ function looksLikeFoodOrDrink(nameRaw) {
 
 function findProductsWindow(lines) {
   const start = lines.findIndex((l) => {
+    const qtyLine = parseQtyNamePrice(l);
+    if (qtyLine && looksLikeFoodOrDrink(qtyLine.name)) return true;
     const end = endsWithPrice(l);
     if (!end) return false;
     const left = end.namePart;
@@ -145,7 +162,7 @@ function findProductsWindow(lines) {
   let end = start;
   for (let i = start; i < lines.length; i++) {
     const l = lines[i].toLowerCase();
-    if (/sub-?total|iva|impuesto|^total\s*:?\s*$/i.test(l)) {
+    if (/(sub-?total|iva|impuesto|^total\b|total a pagar|importe total)/i.test(l)) {
       end = i - 1;
       break;
     }
@@ -159,7 +176,7 @@ function parseItemsLocal(lines, win) {
   if (win.start < 0 || win.end < 0 || win.end < win.start) return [];
 
   const out = [];
-  const pushItem = (name, price) => {
+  const pushItem = (name, qty, price) => {
     if (!name || price == null || price <= 0) return;
     name = name
       .replace(/(?:^|\s)(?:x\s*)?\d{1,2}(?:\s*[x×])?(?:\s|$)/gi, " ")
@@ -170,15 +187,25 @@ function parseItemsLocal(lines, win) {
       dbgNote(`Descartado (no-food): "${name}"`);
       return;
     }
-    out.push({ name, qty: 1, price });
+    out.push({ name, qty: qty || 1, price });
   };
 
   for (let i = win.start; i <= win.end; i++) {
     const l = lines[i];
     if (NOT_PRODUCT_RX.test(l)) continue;
+
+    // 1) cantidad + nombre + precio
+    const cnp = parseQtyNamePrice(l);
+    if (cnp) {
+      pushItem(cnp.name, cnp.qty, cnp.price);
+      continue;
+    }
+
+    // 2) nombre + precio
     const end = endsWithPrice(l);
-    if (!end) continue;
-    pushItem(end.namePart, end.price);
+    if (end) {
+      pushItem(end.namePart, 1, end.price);
+    }
   }
 
   // compactar
@@ -196,48 +223,35 @@ function parseItemsLocal(lines, win) {
 }
 
 /* ==================================================
-   5. Total y folio locales
+   5. Total y folio locales (mejorados)
    ================================================== */
 function detectGrandTotal(lines) {
   const isCard = (s) => /\b(visa|master|amex|tarjeta|card)\b/i.test(s);
-  // 1) después de propina
-  let propIdx = -1;
-  for (let i = 0; i < lines.length; i++)
-    if (/propina|servicio|service/i.test(lines[i])) propIdx = i;
-  if (propIdx >= 0) {
-    for (let j = lines.length - 1; j > propIdx; j--) {
-      const l = lines[j];
-      if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)) {
-        const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
-        if (mm && mm.length) {
-          const v = normalizeNum(mm[mm.length - 1]);
-          if (v != null) {
-            dbgNote(`Total (propina): ${v}`);
-            return v;
-          }
-        }
-      }
-    }
-  }
-  // 2) último total
+
+  // patrones más amplios
+  const TOTAL_RX = /(total( a pagar)?|importe total|total mxn|total con propina)\b/i;
+
+  // 1) buscar desde abajo
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
-    if (/\btotal\b/i.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l) && !isCard(l)) {
-      const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
+    if (isCard(l)) continue;
+    if (TOTAL_RX.test(l) && !/sub|iva|imp\.?t|impt|impuesto/i.test(l)) {
+      const mm = l.match(/(\$?\s*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\$?\s*\d+(?:[.,]\d{2}))/g);
       if (mm && mm.length) {
         const v = normalizeNum(mm[mm.length - 1]);
         if (v != null) {
-          dbgNote(`Total (último): ${v}`);
+          dbgNote(`Total (TOTAL_RX): ${v}`);
           return v;
         }
       }
     }
   }
-  // 3) máximo importe
+
+  // 2) máximo importe
   const nums = [];
   lines.forEach((l) => {
     if (isCard(l)) return;
-    const mm = l.match(/([$\s]*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))/g);
+    const mm = l.match(/(\$?\s*[0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\$?\s*\d+(?:[.,]\d{2}))/g);
     if (mm) mm.forEach((v) => { const p = normalizeNum(v); if (p != null) nums.push(p); });
   });
   if (nums.length) {
@@ -245,12 +259,13 @@ function detectGrandTotal(lines) {
     dbgNote(`Total (máximo): ${t}`);
     return t;
   }
+
   dbgNote("Total no encontrado");
   return null;
 }
 
-function extractFolio5(lines) {
-  // buscamos 5 dígitos cerca de mesero/fecha/hora
+function extractFolio(lines) {
+  // 1) tu lógica de 5 dígitos cerca de mesa/mesero/fecha
   const isDate = (s) => /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s);
   const isTime = (s) => /(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s);
   const iD = lines.findIndex(isDate);
@@ -266,8 +281,18 @@ function extractFolio5(lines) {
   };
   for (let i = from; i <= to; i++) {
     const c = pick5(lines[i]);
-    if (c) { dbgNote(`Folio detectado @${i}: ${c}`); return c; }
+    if (c) { dbgNote(`Folio 5d detectado @${i}: ${c}`); return c; }
   }
+
+  // 2) si no hay 5 dígitos, agarramos el mejor número mediano (3-7 dígitos) en primeras 15 líneas
+  for (let i = 0; i < Math.min(15, lines.length); i++) {
+    const m = lines[i].match(/\b(\d{3,7})\b/);
+    if (m) {
+      dbgNote(`Folio alterno @${i}: ${m[1]}`);
+      return m[1];
+    }
+  }
+
   dbgNote("Folio no encontrado");
   return null;
 }
@@ -295,7 +320,6 @@ async function preprocessImage(file) {
   ctx.filter = "grayscale(1) contrast(1.25) brightness(1.05)";
   ctx.drawImage(bmp, 0, 0, c.width, c.height);
 
-  // si hay OpenCV, lo mejoramos tantito
   if (typeof cv !== "undefined" && cv?.Mat) {
     try {
       let src = cv.imread(c);
@@ -331,35 +355,29 @@ async function runTesseract(canvas) {
    8. IA con OpenAI
    ================================================== */
 async function callOpenAI(rawText) {
-  // si no hay key ni proxy, no hacemos nada
   if (!OPENAI_API_KEY && !OPENAI_PROXY_ENDPOINT) {
     throw new Error("No hay API KEY ni proxy configurado");
   }
 
-  // prompt muy dirigido
   const sys = `Eres un parser de tickets de restaurante Applebee's de México.
-Tu trabajo es leer TEXTO OCR desordenado y devolver solo lo que pide el sistema.
-Regresa SIEMPRE JSON válido con esta forma:
+Debes devolver SIEMPRE JSON válido:
 {
   "folio": "50037",
   "fecha": "2025-09-24",
   "total": 716.00,
   "items": [
-    { "name": "Morita Mezcal", "qty": 1, "price": 149.00 },
-    { "name": "Te Shake", "qty": 1, "price": 49.00 },
-    { "name": "Buffalo Salad", "qty": 1, "price": 259.00 },
-    { "name": "Tacos de Sirloin", "qty": 1, "price": 259.00 }
+    { "name": "Morita Mezcal", "qty": 1, "price": 149.00 }
   ]
 }
 Reglas:
-- "items" SOLO pueden ser comidas, platillos, bebidas o postres. NO pongas "Régimen Fiscal", "Gracias por su visita", "Reimpresión", "Clientes", "Mesa", "IVA", "Subtotal", "Impt. Total", "VISA", "Tarjeta", "Propina".
-- Si ves cosas raras que no son comida, NO las pongas.
-- El folio es casi siempre un número de 5 dígitos cerca de "Mesero", "Clientes", "Mesa" o la hora.
-- La fecha viene como dd/mm/aaaa. Devuélvela como aaaa-mm-dd.
-- El total es el TOTAL de consumo, no la tarjeta. Si hay dos totales, prefiere el que está en la sección principal.`;
+- "items" SOLO pueden ser comidas, platillos, bebidas o postres.
+- NO incluyas datos fiscales, totales, impuestos, propina, formas de pago.
+- Si no ves el folio, pon "".
+- Convierte la fecha dd/mm/aaaa a aaaa-mm-dd.
+- El total es el TOTAL de consumo.`;
+
   const user = `TEXTO OCR:\n${rawText}\n\nDevuélveme SOLO el JSON, sin explicación.`;
 
-  // 1) si hay proxy configurado
   if (OPENAI_PROXY_ENDPOINT) {
     const resp = await fetch(OPENAI_PROXY_ENDPOINT, {
       method: "POST",
@@ -370,7 +388,6 @@ Reglas:
     return await resp.json();
   }
 
-  // 2) llamada directa a OpenAI
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -378,7 +395,7 @@ Reglas:
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini", // puedes cambiar al que quieras
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: sys },
         { role: "user", content: user }
@@ -394,7 +411,6 @@ Reglas:
   }
 
   const data = await resp.json();
-  // el JSON ya viene en data.choices[0].message.content
   const content = data.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content);
 }
@@ -437,31 +453,35 @@ async function processTicketWithIA(file) {
     if (result && typeof result === "object") {
       folio = result.folio || "";
       fecha = result.fecha || "";
-      total = typeof result.total === "number" ? result.total : null;
+      total = typeof result.total === "number" ? result.total : normalizeNum(result.total);
       items = Array.isArray(result.items) ? result.items : [];
     }
 
     // 4) si IA no dio todo, completamos con parser local
-    if (!folio || !fecha || !total || !items.length) {
-      const lines = splitLines(text);
-      const win = findProductsWindow(lines);
-      const localItems = parseItemsLocal(lines, win);
-      const localTotal = detectGrandTotal(lines);
-      const localFolio = extractFolio5(lines);
-      const localFecha = extractDateISO(text);
+    const lines = splitLines(text);
+    const win = findProductsWindow(lines);
+    const localItems = parseItemsLocal(lines, win);
+    const localTotal = detectGrandTotal(lines);
+    const localFolio = extractFolio(lines);
+    const localFecha = extractDateISO(text);
 
-      if (!folio) folio = localFolio || "";
-      if (!fecha) fecha = localFecha || "";
-      if (!total) total = localTotal != null ? localTotal : null;
-      if (!items.length) items = localItems;
-    }
+    if (!folio) folio = localFolio || "";
+    if (!fecha) fecha = localFecha || "";
+    if (!total) total = localTotal != null ? localTotal : null;
+    if (!items.length) items = localItems;
 
-    // 5) filtrar una vez más por si IA nos deja algo feo
-    const finalItems = (items || []).filter(it => {
+    // 5) filtrar una vez más
+    const finalItems = (items || []).map(it => {
+      const name = String(it.name || "").trim();
+      const qty = it.qty ? parseInt(it.qty, 10) || 1 : 1;
+      const price = typeof it.price === "number" ? it.price : normalizeNum(it.price);
+      return { name, qty, price };
+    }).filter(it => {
       const n = String(it.name || "").toLowerCase();
       if (!n) return false;
       if (NOT_PRODUCT_RX.test(n)) return false;
       if (CODEY_RX.test(n)) return false;
+      if (!looksLikeFoodOrDrink(n)) return false;
       return true;
     });
 
@@ -470,18 +490,19 @@ async function processTicketWithIA(file) {
     const iFecha = document.getElementById("inputTicketFecha");
     const iTotal = document.getElementById("inputTicketTotal");
 
-    if (iNum) iNum.value = (folio && /^\d{5}$/.test(folio)) ? folio : (folio || "");
+    if (iNum) iNum.value = folio || "";
     if (iFecha && fecha) iFecha.value = fecha;
-    if (iTotal && total != null) { iTotal.value = total.toFixed(2); iTotal.disabled = false; }
+    if (iTotal && total != null) {
+      iTotal.value = total.toFixed(2);
+      iTotal.disabled = false;
+    }
 
-    // construir el formato que espera registrar.js
     const payload = finalItems.map(it => ({
       name: it.name,
       qty: it.qty || 1,
       price: typeof it.price === "number" ? it.price : null
     }));
 
-    // avisar a registrar.js
     document.dispatchEvent(new CustomEvent("ocr:productos", { detail: payload }));
 
     if (statusEl) {
