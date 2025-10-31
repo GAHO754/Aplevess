@@ -1,16 +1,8 @@
 /* =========================================================
-   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s (mejorado + fix móvil)
-   =========================================================
-   Flujo:
-   1. Tomamos la imagen (file input o cámara)
-   2. Preprocesamos (escala + contraste + opcional OpenCV)
-   3. Tesseract saca el TEXTO
-   4. (IA) Le pedimos a OpenAI que nos regrese JSON limpio
-   5. Si IA falla → parser local mejorado
-   6. Mandamos los productos a registrar.js con `ocr:productos`
+   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s
+   (con fixes para móvil, rotación y líneas rotas 2-3 renglones)
    ========================================================= */
 
-/* ================= Depuración ================= */
 const DBG = { lines: [], notes: [] };
 function dbgNote(s) { try { DBG.notes.push(String(s)); } catch {} }
 function dbgDump() {
@@ -21,18 +13,11 @@ function dbgDump() {
     "\n\n[LINEAS]\n" + DBG.lines.map((s, i) => `${String(i).padStart(2, "0")}: ${s}`).join("\n");
 }
 
-/* ==================================================
-   1. Config IA
-   ================================================== */
-/**
- * ⚠️ NO SUBAS TU API KEY A GITHUB
- */
-const OPENAI_API_KEY = ""; // <--- si no hay, no pasa nada
-const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // ej. "https://tu-funcion.vercel.app/api/ocr"
+/* ====== IA ====== */
+const OPENAI_API_KEY = "";
+const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || "";
 
-/* ==================================================
-   2. Utilidades base
-   ================================================== */
+/* ====== Utils ====== */
 function fixOcrDigits(s) {
   return s
     .replace(/(?<=\d)[Oo](?=\d)/g, "0")
@@ -50,38 +35,6 @@ function splitLines(text) {
   return arr;
 }
 
-// Une líneas que en móvil vienen partidas en 2: nombre arriba y precio abajo
-function mergeBrokenPriceLines(lines) {
-  const out = [];
-  for (let i = 0; i < lines.length; i++) {
-    const cur = lines[i];
-    const next = lines[i + 1];
-
-    // caso típico móvil: nombre → abajo solo precio
-    if (next && /^\$?\s*\d[\d.,]*(?:\s*mxn)?$/i.test(next.trim())) {
-      if (looksLikeFoodOrDrink(cur)) {
-        const merged = `${cur} ${next.trim()}`;
-        out.push(merged);
-        i++; // saltamos la línea del precio porque ya la usamos
-        continue;
-      }
-    }
-
-    // segundo formato: "$ 259.00 MXN"
-    if (next && /^\$?\s*\d[\d.,]*(?:\s*mxn)?$/i.test(next.replace(/\s+/g, " ").trim())) {
-      if (looksLikeFoodOrDrink(cur)) {
-        const merged = `${cur} ${next.replace(/\s+/g, " ").trim()}`;
-        out.push(merged);
-        i++;
-        continue;
-      }
-    }
-
-    out.push(cur);
-  }
-  return out;
-}
-
 function normalizeNum(raw) {
   if (!raw) return null;
   let s = String(raw).replace(/[^\d.,-]/g, "").trim();
@@ -97,10 +50,6 @@ function normalizeNum(raw) {
   return Number.isFinite(n) ? +n.toFixed(2) : null;
 }
 
-/**
- * Detecta si una línea termina con precio (v1)
- * Ej: "BONELESS BUFFALO 199.00"
- */
 function endsWithPrice(line) {
   const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*(?:mxn)?$/i);
   if (!m) return null;
@@ -110,12 +59,6 @@ function endsWithPrice(line) {
   return { namePart, price };
 }
 
-/**
- * Detecta líneas con cantidad + descripción + precio
- * Ej:
- * "2 BONELESS BUFFALO 199.00"
- * "BONELESS BUFFALO x2 $199.00"
- */
 function parseQtyNamePrice(line) {
   // 1) qty al principio
   let m = line.match(/^(\d{1,2})\s+(.+?)\s+(\$?\d[\d.,]*(?:mxn)?)$/i);
@@ -136,9 +79,7 @@ function parseQtyNamePrice(line) {
   return null;
 }
 
-/* ==================================================
-   3. Listas para filtrar líneas NO-producto
-   ================================================== */
+/* ====== listas ====== */
 const NOT_PRODUCT_RX = new RegExp(
   [
     "regimen fiscal",
@@ -154,33 +95,67 @@ const NOT_PRODUCT_RX = new RegExp(
   "i"
 );
 
-// a veces OCR mete pedazos raros
 const CODEY_RX = /^(?:[>-]{1,3}\s*)?[A-Z]{2,6}\d{2,6}[A-Z0-9\-]*$/;
 
-/* ==================================================
-   4. Detección de productos (local)
-   ================================================== */
 function looksLikeFoodOrDrink(nameRaw) {
   if (!nameRaw) return false;
   const n = nameRaw.toLowerCase();
   if (NOT_PRODUCT_RX.test(n)) return false;
   const OK = [
-    // bebidas
     "limonada", "mojito", "margarita", "martini", "paloma", "piña colada", "pina colada",
     "coca", "pepsi", "refresco", "agua", "jugo", "iced tea", "te shake", "shake", "lemonade",
-    // platillos applebee’s / grill
     "burger", "hamburguesa", "chicken", "pollo", "salad", "ensalada",
     "tacos", "sirloin", "arrachera", "buffalo", "salmon", "pasta", "fajita",
     "steak", "rib", "ribs", "boneless", "quesadilla", "sampler", "dip",
     "nachos", "wings", "alitas", "combo", "trio", "shrimp",
-    // postres
     "brownie", "cheesecake", "postre", "dessert", "helado"
   ];
   if (OK.some((w) => n.includes(w))) return true;
-  // si tiene letras y no es fiscal ni mesa ni reimpresión, lo dejamos pasar
   return /[a-záéíóúñ]/i.test(n) && n.length >= 3 && !CODEY_RX.test(n);
 }
 
+/* ====== merge de líneas rotas (versión 2) ====== */
+/**
+ * - caso 1:
+ *   "BONELESS BUFFALO"
+ *   "199.00"
+ * - caso 2:
+ *   "BONELESS BUFFALO x2"
+ *   "$199.00"
+ * - caso 3:
+ *   "BONELESS BUFFALO"
+ *   "x2"
+ *   "$199.00"
+ */
+function mergeBrokenPriceLinesV2(lines) {
+  const out = [];
+  const isPriceLine = (s) => /^\$?\s*\d[\d.,]*(?:\s*mxn)?$/i.test((s || "").trim());
+  const isQtyLine = (s) => /^x?\s*\d{1,2}\s*$/i.test((s || "").trim());
+  for (let i = 0; i < lines.length; i++) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+    const next2 = lines[i + 2];
+
+    // cur = nombre, next = precio
+    if (next && isPriceLine(next) && looksLikeFoodOrDrink(cur)) {
+      out.push(cur + " " + next.trim());
+      i++;
+      continue;
+    }
+
+    // cur = nombre, next = qty, next2 = precio
+    if (next && next2 && isQtyLine(next) && isPriceLine(next2) && looksLikeFoodOrDrink(cur)) {
+      out.push(cur + " " + next.trim() + " " + next2.trim());
+      i += 2;
+      continue;
+    }
+
+    out.push(cur);
+  }
+  return out;
+}
+
+/* ====== ventana de productos ====== */
 function findProductsWindow(lines) {
   const start = lines.findIndex((l) => {
     const qtyLine = parseQtyNamePrice(l);
@@ -229,21 +204,18 @@ function parseItemsLocal(lines, win) {
     const l = lines[i];
     if (NOT_PRODUCT_RX.test(l)) continue;
 
-    // 1) cantidad + nombre + precio
     const cnp = parseQtyNamePrice(l);
     if (cnp) {
       pushItem(cnp.name, cnp.qty, cnp.price);
       continue;
     }
 
-    // 2) nombre + precio
     const end = endsWithPrice(l);
     if (end) {
       pushItem(end.namePart, 1, end.price);
     }
   }
 
-  // compactar
   const comp = [];
   out.forEach((it) => {
     const j = comp.findIndex((x) => x.name.toLowerCase() === it.name.toLowerCase());
@@ -257,16 +229,10 @@ function parseItemsLocal(lines, win) {
   return comp;
 }
 
-/* ==================================================
-   5. Total y folio locales (mejorados)
-   ================================================== */
+/* ====== total / folio ====== */
 function detectGrandTotal(lines) {
   const isCard = (s) => /\b(visa|master|amex|tarjeta|card)\b/i.test(s);
-
-  // patrones más amplios
   const TOTAL_RX = /(total( a pagar)?|importe total|total mxn|total con propina)\b/i;
-
-  // 1) buscar desde abajo
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
     if (isCard(l)) continue;
@@ -281,8 +247,6 @@ function detectGrandTotal(lines) {
       }
     }
   }
-
-  // 2) máximo importe
   const nums = [];
   lines.forEach((l) => {
     if (isCard(l)) return;
@@ -294,13 +258,11 @@ function detectGrandTotal(lines) {
     dbgNote(`Total (máximo): ${t}`);
     return t;
   }
-
   dbgNote("Total no encontrado");
   return null;
 }
 
 function extractFolio(lines) {
-  // 1) lógica de 5 dígitos cerca de mesa/mesero/fecha
   const isDate = (s) => /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s);
   const isTime = (s) => /(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s);
   const iD = lines.findIndex(isDate);
@@ -318,8 +280,6 @@ function extractFolio(lines) {
     const c = pick5(lines[i]);
     if (c) { dbgNote(`Folio 5d detectado @${i}: ${c}`); return c; }
   }
-
-  // 2) si no hay 5 dígitos, agarramos el mejor número mediano (3-7 dígitos) en primeras 15 líneas
   for (let i = 0; i < Math.min(15, lines.length); i++) {
     const m = lines[i].match(/\b(\d{3,7})\b/);
     if (m) {
@@ -327,7 +287,6 @@ function extractFolio(lines) {
       return m[1];
     }
   }
-
   dbgNote("Folio no encontrado");
   return null;
 }
@@ -340,20 +299,45 @@ function extractDateISO(text) {
   return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
-/* ==================================================
-   6. PREPROCESADO IMAGEN
-   ================================================== */
+/* ====== PREPROCESADO IMAGEN (mejorado para móvil) ====== */
 async function preprocessImage(file) {
   const bmp = await createImageBitmap(file);
-  const targetH = 2400;
-  const scale = Math.max(1, Math.min(3, targetH / bmp.height));
-  const c = Object.assign(document.createElement("canvas"), {
-    width: Math.round(bmp.width * scale),
-    height: Math.round(bmp.height * scale),
-  });
+
+  // detectar foto "de cel" muy alta o girada
+  let w = bmp.width;
+  let h = bmp.height;
+  let rotate = false;
+
+  // si está muy "acostada" o muy "parada", giramos
+  if (h > w * 1.6) {
+    // muy alta → está bien
+  } else if (w > h * 1.6) {
+    // muy acostada → giramos 90
+    rotate = true;
+  }
+
+  // más resolución para móvil
+  const targetH = 2800; // un poco más que antes
+  const scale = Math.max(1.4, Math.min(3.2, targetH / (rotate ? w : h))); // subimos mínimo
+
+  const c = document.createElement("canvas");
+  if (rotate) {
+    c.width = Math.round(h * scale);
+    c.height = Math.round(w * scale);
+  } else {
+    c.width = Math.round(w * scale);
+    c.height = Math.round(h * scale);
+  }
   const ctx = c.getContext("2d");
-  ctx.filter = "grayscale(1) contrast(1.25) brightness(1.05)";
-  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+
+  ctx.filter = "grayscale(1) contrast(1.35) brightness(1.05)";
+  if (rotate) {
+    ctx.translate(c.width / 2, c.height / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(bmp, -w * scale / 2, -h * scale / 2, w * scale, h * scale);
+  } else {
+    ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  }
 
   // si hay OpenCV, lo mejoramos tantito
   if (typeof cv !== "undefined" && cv?.Mat) {
@@ -362,7 +346,8 @@ async function preprocessImage(file) {
       let gray = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
       let bw = new cv.Mat();
-      cv.adaptiveThreshold(gray, bw, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 35, 10);
+      // umbral más agresivo para foto de cel
+      cv.adaptiveThreshold(gray, bw, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 35, 5);
       cv.imshow(c, bw);
       src.delete(); gray.delete(); bw.delete();
     } catch (e) {
@@ -373,49 +358,29 @@ async function preprocessImage(file) {
   return c;
 }
 
-/* ==================================================
-   7. Tesseract
-   ================================================== */
+/* ====== Tesseract ====== */
 async function runTesseract(canvas) {
-  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.96));
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.97));
   const { data } = await Tesseract.recognize(blob, "spa+eng", {
-    tessedit_pageseg_mode: "4",
+    tessedit_pageseg_mode: "6", // 👈 más adecuado para una sola columna de texto
     preserve_interword_spaces: "1",
-    user_defined_dpi: "320",
+    user_defined_dpi: "360",
     tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$., ",
   });
   return data.text || "";
 }
 
-/* ==================================================
-   8. IA con OpenAI
-   ================================================== */
+/* ====== IA ====== */
 async function callOpenAI(rawText) {
-  // si no hay key ni proxy, no hacemos nada
   if (!OPENAI_API_KEY && !OPENAI_PROXY_ENDPOINT) {
     throw new Error("No hay API KEY ni proxy configurado");
   }
 
-  // prompt muy dirigido
   const sys = `Eres un parser de tickets de restaurante Applebee's de México.
-Debes devolver SIEMPRE JSON válido:
-{
-  "folio": "50037",
-  "fecha": "2025-09-24",
-  "total": 716.00,
-  "items": [
-    { "name": "Morita Mezcal", "qty": 1, "price": 149.00 }
-  ]
-}
-Reglas:
-- "items" SOLO pueden ser comidas, platillos, bebidas o postres.
-- NO incluyas datos fiscales, totales, impuestos, propina, formas de pago.
-- Si no ves el folio, pon "".
-- Convierte la fecha dd/mm/aaaa a aaaa-mm-dd.
-- El total es el TOTAL de consumo.`;
-  const user = `TEXTO OCR:\n${rawText}\n\nDevuélveme SOLO el JSON, sin explicación.`;
+Devuelve SOLO JSON con: folio, fecha (aaaa-mm-dd), total (número), items[{name,qty,price}].
+No incluyas datos fiscales, formas de pago ni IVA.`;
+  const user = `Texto OCR:\n${rawText}\n\nDevuélveme SOLO el JSON.`;
 
-  // 1) si hay proxy configurado
   if (OPENAI_PROXY_ENDPOINT) {
     const resp = await fetch(OPENAI_PROXY_ENDPOINT, {
       method: "POST",
@@ -426,7 +391,6 @@ Reglas:
     return await resp.json();
   }
 
-  // 2) llamada directa a OpenAI
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -450,14 +414,11 @@ Reglas:
   }
 
   const data = await resp.json();
-  // el JSON ya viene en data.choices[0].message.content
   const content = data.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content);
 }
 
-/* ==================================================
-   9. Proceso principal
-   ================================================== */
+/* ====== Proceso principal ====== */
 async function processTicketWithIA(file) {
   const statusEl = document.getElementById("ocrStatus");
   if (statusEl) {
@@ -469,14 +430,10 @@ async function processTicketWithIA(file) {
     DBG.notes = [];
     DBG.lines = [];
 
-    // 1) preprocesar imagen
     const canvas = await preprocessImage(file);
-
-    // 2) OCR base
     const text = await runTesseract(canvas);
     dbgNote("OCR listo, longitud: " + text.length);
 
-    // 3) intentar IA
     let result = null;
     try {
       result = await callOpenAI(text);
@@ -497,10 +454,10 @@ async function processTicketWithIA(file) {
       items = Array.isArray(result.items) ? result.items : [];
     }
 
-    // 4) si IA no dio todo, completamos con parser local
+    // local
     let lines = splitLines(text);
-    // 👇 FIX MÓVIL: junta líneas nombre + precio
-    lines = mergeBrokenPriceLines(lines);
+    // 👇 súper fix para móvil
+    lines = mergeBrokenPriceLinesV2(lines);
 
     const win = findProductsWindow(lines);
     const localItems = parseItemsLocal(lines, win);
@@ -513,7 +470,6 @@ async function processTicketWithIA(file) {
     if (!total) total = localTotal != null ? localTotal : null;
     if (!items.length) items = localItems;
 
-    // 5) filtrar una vez más
     const finalItems = (items || []).map(it => {
       const name = String(it.name || "").trim();
       const qty = it.qty ? parseInt(it.qty, 10) || 1 : 1;
@@ -528,7 +484,7 @@ async function processTicketWithIA(file) {
       return true;
     });
 
-    // 6) mandar a la UI
+    // a la UI
     const iNum = document.getElementById("inputTicketNumero");
     const iFecha = document.getElementById("inputTicketFecha");
     const iTotal = document.getElementById("inputTicketTotal");
@@ -540,14 +496,12 @@ async function processTicketWithIA(file) {
       iTotal.disabled = false;
     }
 
-    // construir el formato que espera registrar.js
     const payload = finalItems.map(it => ({
       name: it.name,
       qty: it.qty || 1,
       price: typeof it.price === "number" ? it.price : null
     }));
 
-    // avisar a registrar.js
     document.dispatchEvent(new CustomEvent("ocr:productos", { detail: payload }));
 
     if (statusEl) {
@@ -567,9 +521,7 @@ async function processTicketWithIA(file) {
   }
 }
 
-/* ==================================================
-   10. Bind al botón
-   ================================================== */
+/* ====== Botón ====== */
 document.getElementById("btnProcesarTicket")?.addEventListener("click", async () => {
   const inp = document.getElementById("ticketFile");
   const file = inp?.files?.[0];
