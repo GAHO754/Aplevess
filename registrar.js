@@ -1,4 +1,4 @@
-// registrar.js — RTDB + Cámara + OCR + UI BLOQUEADA (puntos auto 1–15)
+// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + UI BLOQUEADA
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -15,7 +15,6 @@
   const btnClose     = $('btnCerrarCamara');
   const video        = $('cameraVideo');
   const btnShot      = $('btnCapturar');
-  const btnOCR       = $('btnProcesarTicket'); // OCR vive en ocr.js (processTicketWithIA)
   const ocrStatus    = $('ocrStatus');
 
   const iNum   = $('inputTicketNumero');
@@ -124,8 +123,22 @@
     dt.items.add(file);
     if (fileInput) fileInput.files = dt.files;
     setPreview(file);
-    // habilita botón procesar
-    if (btnOCR) btnOCR.disabled = false;
+    return file;
+  }
+
+  async function autoProcessCurrentFile() {
+    const file = fileInput?.files?.[0];
+    if (!file) {
+      setStatus("Sube o toma la foto del ticket primero.", "err");
+      return;
+    }
+    if (typeof window.processTicketWithIA === "function") {
+      setStatus("🕐 Escaneando ticket…");
+      await window.processTicketWithIA(file);
+    } else {
+      console.warn("[autoProcess] processTicketWithIA no está disponible. Revisa ocr.js");
+      setStatus("No se pudo iniciar el OCR. Revisa la consola.", "err");
+    }
   }
 
   // ===== Cámara =====
@@ -165,38 +178,50 @@
     if (!w||!h){ setStatus("Cámara aún no lista. Intenta de nuevo.","err"); return; }
     const c=document.createElement('canvas'); c.width=w; c.height=h;
     const ctx = c.getContext('2d');
-    // Un pelín de mejora visual para OCR
+    // ligera mejora visual para OCR
     ctx.filter = "contrast(1.15) brightness(1.05) saturate(1.05)";
     ctx.drawImage(video,0,0,w,h);
     stopCamera();
     const dataURL=c.toDataURL("image/jpeg",.95);
     const blob=dataURLtoBlob(dataURL);
     setFileInputFromBlob(blob,`ticket_${Date.now()}.jpg`);
-    setStatus("📎 Foto capturada. Procesa con OCR…","ok");
-    // auto-procesar si ocr.js ya cargó
-    const file = fileInput?.files?.[0];
-    if (file && typeof window.processTicketWithIA === "function") {
-      await window.processTicketWithIA(file);
-    } else {
-      btnOCR?.click();
-    }
+    setStatus("📎 Foto capturada. Procesando OCR…","ok");
+    await autoProcessCurrentFile(); // AUTO
   }
   btnCam?.addEventListener('click', openCamera);
   btnClose?.addEventListener('click', stopCamera);
   btnShot?.addEventListener('click', captureFrame);
 
-  // ===== Selección manual / dropzone =====
+  // ===== Subir archivo (AUTO) =====
   btnPickFile?.addEventListener('click', ()=> fileInput?.click());
-  fileInput?.addEventListener('change', e=>{
+  fileInput?.addEventListener('change', async e=>{
     const f=e.target.files&&e.target.files[0];
     if (f){
       setPreview(f);
-      setStatus("📎 Imagen cargada. Procesa con OCR.","ok");
-      btnOCR && (btnOCR.disabled = false);
-    } else {
-      btnOCR && (btnOCR.disabled = true);
+      setStatus("📎 Imagen cargada. Procesando OCR…","ok");
+      await autoProcessCurrentFile(); // AUTO
     }
   });
+
+  // ===== Drag & Drop (AUTO) =====
+  if (dropzone) {
+    dropzone.addEventListener('click', ()=> fileInput?.click());
+    dropzone.addEventListener('dragover', e => {
+      e.preventDefault(); dropzone.classList.add('drag');
+    });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+    dropzone.addEventListener('drop', async e => {
+      e.preventDefault(); dropzone.classList.remove('drag');
+      if (e.dataTransfer.files?.length) {
+        const dt = new DataTransfer();
+        dt.items.add(e.dataTransfer.files[0]);
+        fileInput.files = dt.files;
+        setPreview(e.dataTransfer.files[0]);
+        setStatus("📎 Imagen cargada. Procesando OCR…","ok");
+        await autoProcessCurrentFile(); // AUTO
+      }
+    });
+  }
 
   // ===== Productos (solo lectura) =====
   function upsertProducto(nombre, cantidad=1, price=null){
@@ -365,35 +390,7 @@
   disableAllEdits();
   if (tablaPuntosBody) tablaPuntosBody.innerHTML='';
 
-  // ===== Safety: asegura que el botón SIEMPRE procese el archivo actual =====
-  (() => {
-    const btn = document.getElementById("btnProcesarTicket");
-    const statusEl = document.getElementById("ocrStatus");
-    if (!btn) return;
-
-    btn.addEventListener("click", async () => {
-      try {
-        const inp = document.getElementById("ticketFile");
-        const file = inp?.files?.[0];
-        if (!file) {
-          statusEl.className = "validacion-msg err";
-          statusEl.textContent = "Sube o toma la foto del ticket primero.";
-          return;
-        }
-        if (typeof window.processTicketWithIA === "function") {
-          statusEl.className = "validacion-msg";
-          statusEl.textContent = "🕐 Escaneando ticket…";
-          await window.processTicketWithIA(file);
-        }
-      } catch (err) {
-        console.error("[ProcesarTicket safety]", err);
-        statusEl.className = "validacion-msg err";
-        statusEl.textContent = "Ocurrió un error al iniciar el OCR.";
-      }
-    }, { capture: true });
-  })();
-
-  // ===== Logs de errores por si algo truena antes de ocr.js =====
+  // ===== Logs de errores =====
   window.addEventListener("error", (e) => {
     console.error("[window error]", e.error || e.message || e);
   });
