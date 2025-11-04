@@ -1,7 +1,4 @@
-/* =========================================================
-   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s
-   (con fixes para móvil, rotación y líneas rotas 2-3 renglones)
-   ========================================================= */
+
 
 const DBG = { lines: [], notes: [] };
 function dbgNote(s) { try { DBG.notes.push(String(s)); } catch {} }
