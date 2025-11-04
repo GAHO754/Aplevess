@@ -1,8 +1,3 @@
-/* =========================================================
-   ocr.js — OCR + IA (OpenAI) + Filtros Applebee’s
-   (móvil: rotación, merge de líneas rotas; expone processTicketWithIA)
-   ========================================================= */
-
 const DBG = { lines: [], notes: [] };
 function dbgNote(s) { try { DBG.notes.push(String(s)); } catch {} }
 function dbgDump() {
@@ -14,8 +9,19 @@ function dbgDump() {
 }
 
 /* ====== IA ====== */
-const OPENAI_API_KEY = ""; // NO pegar clave aquí en producción
-const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // ej: https://ocr-...a.run.app
+// Opción A (directo) — deja vacío si usarás proxy:
+const OPENAI_API_KEY = ""; // p.ej. "sk-proj-xxxxxxxx", o vacío si usarás proxy
+// Opción B (proxy Firebase Functions Gen2)
+const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // p.ej. "https://ocr-xxxxx-uc.a.run.app"
+
+/* ====== UI helpers ====== */
+function setIABadge(state, msg) {
+  const el = document.getElementById('iaBadge');
+  if (!el) return;
+  if (state === 'ok') { el.style.background = '#2e7d32'; el.textContent = `IA: OK ${msg||''}`; }
+  else if (state === 'err') { el.style.background = '#c62828'; el.textContent = `IA: ERROR ${msg||''}`; }
+  else { el.style.background = '#444'; el.textContent = `IA: ${msg||'esperando…'}`; }
+}
 
 /* ====== Utils ====== */
 function fixOcrDigits(s) {
@@ -24,7 +30,6 @@ function fixOcrDigits(s) {
     .replace(/(?<=\d)S(?=\d)/g, "5")
     .replace(/(?<=\d)[lI](?=\d)/g, "1");
 }
-
 function splitLines(text) {
   const arr = String(text || "")
     .replace(/\r/g, "\n")
@@ -34,7 +39,6 @@ function splitLines(text) {
   DBG.lines = arr.slice();
   return arr;
 }
-
 function normalizeNum(raw) {
   if (!raw) return null;
   let s = String(raw).replace(/[^\d.,-]/g, "").trim();
@@ -49,7 +53,6 @@ function normalizeNum(raw) {
   const n = parseFloat(s);
   return Number.isFinite(n) ? +n.toFixed(2) : null;
 }
-
 function endsWithPrice(line) {
   const m = line.match(/(?:\$?\s*)([0-9]{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))\s*(?:mxn)?$/i);
   if (!m) return null;
@@ -58,9 +61,8 @@ function endsWithPrice(line) {
   const namePart = line.replace(m[0], "").trim();
   return { namePart, price };
 }
-
 function parseQtyNamePrice(line) {
-  // 1) qty al principio: "2 BURGER 199.00"
+  // "2 Hamburguesa Doble 199.00"
   let m = line.match(/^(\d{1,2})\s+(.+?)\s+(\$?\d[\d.,]*(?:mxn)?)$/i);
   if (m) {
     const qty = parseInt(m[1], 10);
@@ -68,7 +70,7 @@ function parseQtyNamePrice(line) {
     const price = normalizeNum(m[3]);
     if (price != null) return { qty, name, price };
   }
-  // 2) "BURGER x2 199.00"
+  // "Hamburguesa Doble x2 199.00"
   m = line.match(/^(.+?)\s+x\s*(\d{1,2})\s+(\$?\d[\d.,]*(?:mxn)?)$/i);
   if (m) {
     const name = m[1].trim();
@@ -90,13 +92,11 @@ const NOT_PRODUCT_RX = new RegExp(
     "mesero", "mesa", "clientes?", "reimpresion", "reimpresi[oó]n", "no\\.", "nota", "orden", "ticket",
     "gracias por su visita", "gracias por tu visita", "vuelva pronto",
     "folio fiscal", "cfd[ii]", "sello", "cadena original",
-    "pago con", "efectivo", "tarjeta", "m.n.", "mxn"
+    "pago con", "efectivo", "tarjeta", "cambio", "m.n.", "mxn"
   ].join("|"),
   "i"
 );
-
 const CODEY_RX = /^(?:[>-]{1,3}\s*)?[A-Z]{2,6}\d{2,6}[A-Z0-9\-]*$/;
-
 function looksLikeFoodOrDrink(nameRaw) {
   if (!nameRaw) return false;
   const n = nameRaw.toLowerCase();
@@ -123,21 +123,16 @@ function mergeBrokenPriceLinesV2(lines) {
     const cur = lines[i];
     const next = lines[i + 1];
     const next2 = lines[i + 2];
-
-    // cur = nombre, next = precio
     if (next && isPriceLine(next) && looksLikeFoodOrDrink(cur)) {
       out.push(cur + " " + next.trim());
       i++;
       continue;
     }
-
-    // cur = nombre, next = qty, next2 = precio
     if (next && next2 && isQtyLine(next) && isPriceLine(next2) && looksLikeFoodOrDrink(cur)) {
       out.push(cur + " " + next.trim() + " " + next2.trim());
       i += 2;
       continue;
     }
-
     out.push(cur);
   }
   return out;
@@ -146,8 +141,8 @@ function mergeBrokenPriceLinesV2(lines) {
 /* ====== ventana de productos ====== */
 function findProductsWindow(lines) {
   const start = lines.findIndex((l) => {
-    const cnp = parseQtyNamePrice(l);
-    if (cnp && looksLikeFoodOrDrink(cnp.name)) return true;
+    const qtyLine = parseQtyNamePrice(l);
+    if (qtyLine && looksLikeFoodOrDrink(qtyLine.name)) return true;
     const end = endsWithPrice(l);
     if (!end) return false;
     const left = end.namePart;
@@ -156,7 +151,6 @@ function findProductsWindow(lines) {
     return true;
   });
   if (start < 0) return { start: -1, end: -1 };
-
   let end = start;
   for (let i = start; i < lines.length; i++) {
     const l = lines[i].toLowerCase();
@@ -169,10 +163,8 @@ function findProductsWindow(lines) {
   dbgNote(`Ventana productos ${start}..${end}`);
   return { start, end };
 }
-
 function parseItemsLocal(lines, win) {
   if (win.start < 0 || win.end < 0 || win.end < win.start) return [];
-
   const out = [];
   const pushItem = (name, qty, price) => {
     if (!name || price == null || price <= 0) return;
@@ -187,24 +179,14 @@ function parseItemsLocal(lines, win) {
     }
     out.push({ name, qty: qty || 1, price });
   };
-
   for (let i = win.start; i <= win.end; i++) {
     const l = lines[i];
     if (NOT_PRODUCT_RX.test(l)) continue;
-
     const cnp = parseQtyNamePrice(l);
-    if (cnp) {
-      pushItem(cnp.name, cnp.qty, cnp.price);
-      continue;
-    }
-
+    if (cnp) { pushItem(cnp.name, cnp.qty, cnp.price); continue; }
     const end = endsWithPrice(l);
-    if (end) {
-      pushItem(end.namePart, 1, end.price);
-    }
+    if (end) { pushItem(end.namePart, 1, end.price); }
   }
-
-  // compactar
   const comp = [];
   out.forEach((it) => {
     const j = comp.findIndex((x) => x.name.toLowerCase() === it.name.toLowerCase());
@@ -213,7 +195,6 @@ function parseItemsLocal(lines, win) {
       comp[j].price = +(comp[j].price + it.price).toFixed(2);
     } else comp.push({ ...it });
   });
-
   dbgNote(`Items locales: ${comp.length}`);
   return comp;
 }
@@ -250,7 +231,6 @@ function detectGrandTotal(lines) {
   dbgNote("Total no encontrado");
   return null;
 }
-
 function extractFolio(lines) {
   const isDate = (s) => /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/.test(s);
   const isTime = (s) => /(\d{1,2}):(\d{2})\s*(am|pm)?/i.test(s);
@@ -271,15 +251,11 @@ function extractFolio(lines) {
   }
   for (let i = 0; i < Math.min(15, lines.length); i++) {
     const m = lines[i].match(/\b(\d{3,7})\b/);
-    if (m) {
-      dbgNote(`Folio alterno @${i}: ${m[1]}`);
-      return m[1];
-    }
+    if (m) { dbgNote(`Folio alterno @${i}: ${m[1]}`); return m[1]; }
   }
   dbgNote("Folio no encontrado");
   return null;
 }
-
 function extractDateISO(text) {
   const m = String(text || "").match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})/);
   if (!m) return "";
@@ -288,32 +264,17 @@ function extractDateISO(text) {
   return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
-/* ====== PREPROCESADO IMAGEN (móvil) ====== */
+/* ====== PREPROCESADO IMAGEN ====== */
 async function preprocessImage(file) {
   const bmp = await createImageBitmap(file);
-
-  // detectar orientación
-  let w = bmp.width;
-  let h = bmp.height;
-  let rotate = false;
-
-  if (w > h * 1.6) {
-    rotate = true; // muy “acostada”
-  }
-
-  const targetH = 2800; // resolución objetivo alta
+  let w = bmp.width, h = bmp.height, rotate = false;
+  if (w > h * 1.6) rotate = true;
+  const targetH = 2800;
   const scale = Math.max(1.4, Math.min(3.2, targetH / (rotate ? w : h)));
-
   const c = document.createElement("canvas");
-  if (rotate) {
-    c.width = Math.round(h * scale);
-    c.height = Math.round(w * scale);
-  } else {
-    c.width = Math.round(w * scale);
-    c.height = Math.round(h * scale);
-  }
+  if (rotate) { c.width = Math.round(h * scale); c.height = Math.round(w * scale); }
+  else { c.width = Math.round(w * scale); c.height = Math.round(h * scale); }
   const ctx = c.getContext("2d");
-
   ctx.filter = "grayscale(1) contrast(1.35) brightness(1.05)";
   if (rotate) {
     ctx.translate(c.width / 2, c.height / 2);
@@ -322,8 +283,6 @@ async function preprocessImage(file) {
   } else {
     ctx.drawImage(bmp, 0, 0, c.width, c.height);
   }
-
-  // OpenCV opcional
   if (typeof cv !== "undefined" && cv?.Mat) {
     try {
       let src = cv.imread(c);
@@ -337,7 +296,6 @@ async function preprocessImage(file) {
       console.warn("OpenCV preprocess falló:", e);
     }
   }
-
   return c;
 }
 
@@ -353,65 +311,99 @@ async function runTesseract(canvas) {
   return data.text || "";
 }
 
-/* ====== IA ====== */
+/* ====== IA (con badge y logs) ====== */
 async function callOpenAI(rawText) {
   if (!OPENAI_API_KEY && !OPENAI_PROXY_ENDPOINT) {
+    setIABadge('err', '(sin clave/proxy)');
     throw new Error("No hay API KEY ni proxy configurado");
   }
 
-  const sys = `Eres un parser de tickets de restaurante Applebee's de México.
-Devuelve SOLO JSON con: folio, fecha (aaaa-mm-dd), total (número), items[{name,qty,price}].
-No incluyas datos fiscales, formas de pago ni IVA.`;
-  const user = `Texto OCR:\n${rawText}\n\nDevuélveme SOLO el JSON.`;
+  const sys = `
+Eres un parser de tickets de Applebee's (México).
+Debes responder SOLO JSON válido con este shape exacto:
+{
+  "folio": "string (5-7 dígitos o vacío si no se ve)",
+  "fecha": "YYYY-MM-DD (o vacío)",
+  "total": number,
+  "items": [{"name":"string","qty":number,"price":number}]
+}
+Reglas:
+- No inventes datos. Si no ves algo, devuelve vacío (folio/fecha) o 0/[].
+- "items" solo comida/bebida (excluye IVA/subtotal/propina/pagos).
+- qty >= 1. price = importe de línea; si no se ve, usa 0.
+- Responde SOLO JSON (sin texto extra).
+`;
+  const user = `Texto OCR sin modificar:\n${rawText}\n\nResponde SOLO el JSON indicado.`;
 
-  if (OPENAI_PROXY_ENDPOINT) {
-    const resp = await fetch(OPENAI_PROXY_ENDPOINT, {
+  const started = performance.now();
+  setIABadge(null, 'llamando…');
+
+  try {
+    if (OPENAI_PROXY_ENDPOINT) {
+      const resp = await fetch(OPENAI_PROXY_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: rawText, sys })
+      });
+      const took = Math.round(performance.now() - started);
+      if (!resp.ok) {
+        const txt = await resp.text().catch(()=> '');
+        setIABadge('err', `HTTP ${resp.status}`);
+        dbgNote(`IA(proxy) ERROR ${resp.status} en ${took}ms: ${txt}`);
+        throw new Error("Proxy IA respondió error: " + resp.status);
+      }
+      const j = await resp.json();
+      setIABadge('ok', `${took}ms`);
+      dbgNote(`IA(proxy) OK en ${took}ms`);
+      console.info('[IA][proxy] respuesta:', j);
+      return j;
+    }
+
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: rawText })
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: user }
+        ],
+        temperature: 0.1,
+        response_format: { type: "json_object" }
+      })
     });
-    if (!resp.ok) throw new Error("Proxy IA respondió error");
-    return await resp.json();
+
+    const took = Math.round(performance.now() - started);
+    if (!resp.ok) {
+      const txt = await resp.text().catch(()=> '');
+      setIABadge('err', `HTTP ${resp.status}`);
+      dbgNote(`IA(Direct) ERROR ${resp.status} en ${took}ms: ${txt}`);
+      throw new Error("OpenAI error: " + txt);
+    }
+
+    const data = await resp.json();
+    setIABadge('ok', `${took}ms`);
+    dbgNote(`IA(Direct) OK en ${took}ms`);
+    const content = data.choices?.[0]?.message?.content || "{}";
+    const parsed = JSON.parse(content);
+    console.info('[IA][direct] respuesta:', parsed);
+    return parsed;
+  } catch (e) {
+    setIABadge('err', 'excepción');
+    throw e;
   }
-
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: user }
-      ],
-      temperature: 0.1,
-      response_format: { type: "json_object" }
-    })
-  });
-
-  if (!resp.ok) {
-    const txt = await resp.text();
-    throw new Error("OpenAI error: " + txt);
-  }
-
-  const data = await resp.json();
-  const content = data.choices?.[0]?.message?.content || "{}";
-  return JSON.parse(content);
 }
 
 /* ====== Proceso principal ====== */
 async function processTicketWithIA(file) {
   const statusEl = document.getElementById("ocrStatus");
-  if (statusEl) {
-    statusEl.textContent = "🕐 Escaneando ticket…";
-    statusEl.className = "validacion-msg";
-  }
+  if (statusEl) { statusEl.textContent = "🕐 Escaneando ticket…"; statusEl.className = "validacion-msg"; }
 
   try {
-    DBG.notes = [];
-    DBG.lines = [];
+    DBG.notes = []; DBG.lines = [];
 
     const canvas = await preprocessImage(file);
     const text = await runTesseract(canvas);
@@ -421,15 +413,20 @@ async function processTicketWithIA(file) {
     try {
       result = await callOpenAI(text);
       dbgNote("IA respondió OK");
+      if (result && typeof result === "object") {
+        const okFields = [
+          result.folio ? 'folio' : null,
+          result.fecha ? 'fecha' : null,
+          (typeof result.total === 'number' && result.total>0) ? 'total' : null,
+          (Array.isArray(result.items) && result.items.length>0) ? 'items' : null
+        ].filter(Boolean);
+        if (statusEl) statusEl.textContent = `IA OK (${okFields.join(', ')||'sin campos'})… afinando con parser local.`;
+      }
     } catch (iaErr) {
       console.warn("IA falló, usando parser local:", iaErr);
     }
 
-    let folio = "";
-    let fecha = "";
-    let total = null;
-    let items = [];
-
+    let folio = "", fecha = "", total = null, items = [];
     if (result && typeof result === "object") {
       folio = result.folio || "";
       fecha = result.fecha || "";
@@ -437,10 +434,9 @@ async function processTicketWithIA(file) {
       items = Array.isArray(result.items) ? result.items : [];
     }
 
-    // parser local de respaldo
+    // Parser local (si falta algo)
     let lines = splitLines(text);
     lines = mergeBrokenPriceLinesV2(lines);
-
     const win = findProductsWindow(lines);
     const localItems = parseItemsLocal(lines, win);
     const localTotal = detectGrandTotal(lines);
@@ -452,6 +448,7 @@ async function processTicketWithIA(file) {
     if (!total) total = localTotal != null ? localTotal : null;
     if (!items.length) items = localItems;
 
+    // Sanitiza items
     const finalItems = (items || []).map(it => {
       const name = String(it.name || "").trim();
       const qty = it.qty ? parseInt(it.qty, 10) || 1 : 1;
@@ -466,17 +463,14 @@ async function processTicketWithIA(file) {
       return true;
     });
 
-    // a la UI
+    // A la UI
     const iNum = document.getElementById("inputTicketNumero");
     const iFecha = document.getElementById("inputTicketFecha");
     const iTotal = document.getElementById("inputTicketTotal");
 
-    if (iNum) iNum.value = folio || "";
-    if (iFecha && fecha) iFecha.value = fecha;
-    if (iTotal && total != null) {
-      iTotal.value = total.toFixed(2);
-      iTotal.disabled = false;
-    }
+    if (iNum)  { iNum.value  = folio || ""; }
+    if (iFecha && fecha) { iFecha.value = fecha; }
+    if (iTotal && total != null) { iTotal.value = total.toFixed(2); iTotal.disabled = false; }
 
     const payload = finalItems.map(it => ({
       name: it.name,
@@ -503,11 +497,16 @@ async function processTicketWithIA(file) {
   }
 }
 
-/* ====== Exporta al window (para registrar.js) ====== */
-try {
-  window.processTicketWithIA = processTicketWithIA;
-  window.OCR_READY = true;
-  console.log("[ocr.js] OCR listo");
-} catch (e) {
-  console.error("No pude exponer processTicketWithIA:", e);
-}
+/* ====== Auto-OCR (sin botón) ====== */
+(function bindAutoOCR(){
+  const fileInput = document.getElementById('ticketFile');
+  if (!fileInput) return;
+  fileInput.addEventListener('change', async (e)=>{
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const statusEl = document.getElementById("ocrStatus");
+    if (statusEl) { statusEl.textContent = "🕐 Preparando OCR…"; statusEl.className = "validacion-msg"; }
+    try { await processTicketWithIA(f); }
+    catch { /* el catch interno ya muestra mensajes */ }
+  });
+})();
