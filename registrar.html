@@ -55,14 +55,17 @@
       </div>
 
       <!-- =========== ACCIONES OCR =========== -->
-      <div class="actions-row">
+      <div class="actions-row" style="gap:8px; flex-wrap:wrap;">
         <button id="btnProcesarTicket" type="button" class="btn-cta">
           <span>Procesar ticket (OCR)</span>
+        </button>
+        <button id="btnToggleDebug" type="button" class="btn-secondary" aria-expanded="false">
+          🛠️ Mostrar depuración OCR
         </button>
       </div>
       <div id="ocrStatus" class="validacion-msg"></div>
 
-      <!-- Panel de depuración OCR (lo agregamos aquí) -->
+      <!-- Panel de depuración OCR -->
       <pre id="ocrDebug" style="
         background: rgba(0,0,0,.35);
         border: 1px solid rgba(255,255,255,.08);
@@ -139,11 +142,17 @@
   <!-- OpenCV (auto enderezado) -->
   <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 
+  <!-- Proxy IA (Firebase Functions Gen2) -->
+  <script>
+    // 👇 Usa tu Function URL para llamar a ChatGPT sin exponer API key
+    window.OPENAI_PROXY_ENDPOINT = "https://us-central1-applebesapp.cloudfunctions.net/ocr";
+  </script>
+
   <!-- Lógica tuya -->
   <script src="registrar.js"></script>
   <script src="ocr.js"></script>
 
-  <!-- Drag & drop -->
+  <!-- Drag & drop + Debug toggle -->
   <script>
     const dz = document.getElementById('dropzone');
     const fileInput = document.getElementById('ticketFile');
@@ -170,7 +179,15 @@
       fileInput.click();
     });
 
-    // aquí tú ya tenías tu lógica de abrir cámara en registrar.js
+    // Botón depuración OCR (muestra/oculta <pre id="ocrDebug">)
+    const btnDbg = document.getElementById('btnToggleDebug');
+    const preDbg = document.getElementById('ocrDebug');
+    btnDbg?.addEventListener('click', () => {
+      const showing = preDbg.style.display !== 'none';
+      preDbg.style.display = showing ? 'none' : 'block';
+      btnDbg.setAttribute('aria-expanded', String(!showing));
+      btnDbg.textContent = showing ? '🛠️ Mostrar depuración OCR' : '🛠️ Ocultar depuración OCR';
+    });
   </script>
 </body>
 </html>
