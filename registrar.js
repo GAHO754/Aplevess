@@ -1,4 +1,4 @@
-// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + UI BLOQUEADA
+// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + espera de OCR listo
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -30,8 +30,8 @@
   const totalPuntosEl   = $('totalPuntos');
 
   // ===== Políticas =====
-  const VENCE_DIAS = 180; // ~6 meses
-  const DAY_LIMIT  = 2;   // máx tickets por día
+  const VENCE_DIAS = 180;
+  const DAY_LIMIT  = 2;
 
   // ===== Estado =====
   let isLogged = false;
@@ -126,18 +126,33 @@
     return file;
   }
 
+  // ==== Espera a OCR expuesto por ocr.js ====
+  async function waitForOCR(tries = 30, delayMs = 100) {
+    for (let i = 0; i < tries; i++) {
+      if (typeof window.processTicketWithIA === "function") return true;
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+    return false;
+  }
+
   async function autoProcessCurrentFile() {
     const file = fileInput?.files?.[0];
     if (!file) {
       setStatus("Sube o toma la foto del ticket primero.", "err");
       return;
     }
-    if (typeof window.processTicketWithIA === "function") {
+    const ready = await waitForOCR();
+    if (!ready) {
+      console.warn("[autoProcess] OCR no listo (processTicketWithIA no encontrada)");
+      setStatus("No se pudo iniciar el OCR. Revisa la consola.", "err");
+      return;
+    }
+    try {
       setStatus("🕐 Escaneando ticket…");
       await window.processTicketWithIA(file);
-    } else {
-      console.warn("[autoProcess] processTicketWithIA no está disponible. Revisa ocr.js");
-      setStatus("No se pudo iniciar el OCR. Revisa la consola.", "err");
+    } catch (e) {
+      console.error("[autoProcess] Error al procesar:", e);
+      setStatus("Falló el OCR. Intenta de nuevo.", "err");
     }
   }
 
@@ -178,7 +193,6 @@
     if (!w||!h){ setStatus("Cámara aún no lista. Intenta de nuevo.","err"); return; }
     const c=document.createElement('canvas'); c.width=w; c.height=h;
     const ctx = c.getContext('2d');
-    // ligera mejora visual para OCR
     ctx.filter = "contrast(1.15) brightness(1.05) saturate(1.05)";
     ctx.drawImage(video,0,0,w,h);
     stopCamera();
@@ -342,7 +356,6 @@
           total: totalNum,
           productos: productos.map(p=>({ nombre:p.name, cantidad:p.qty, precioLinea:p.price ?? null, puntos_unitarios:p.pointsUnit })),
           puntos: { total: puntosEnteros, detalle },
-          // campos planos redundantes (compatibilidad con panel)
           puntosTotal: puntosEnteros,
           points: puntosEnteros,
           vencePuntos: vencePuntos.getTime(),
@@ -381,7 +394,11 @@
   document.addEventListener('ocr:productos', ev=>{
     const det = ev.detail || [];
     productos = [];
-    if (Array.isArray(det)) det.forEach(p => upsertProducto(p.name, p.qty||1, typeof p.price==='number'?p.price:null));
+    if (Array.isArray(det)) det.forEach(p => {
+      const priceNum = typeof p.price === 'number' ? p.price : null;
+      const qty = p.qty || 1;
+      upsertProducto(p.name, qty, priceNum);
+    });
   });
 
   btnRegistrar?.addEventListener('click', registrarTicketRTDB);
