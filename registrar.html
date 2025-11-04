@@ -56,11 +56,10 @@
 
       <!-- =========== ESTADO OCR + DEBUG =========== -->
       <div id="ocrStatus" class="validacion-msg"></div>
-      <div class="actions-row" style="gap:8px; flex-wrap:wrap;">
-        <button id="btnToggleDebug" type="button" class="btn-secondary" aria-expanded="false">
-          🛠️ Mostrar depuración OCR
-        </button>
-      </div>
+<div id="iaBadge" style="
+  display:inline-block; margin-top:6px; padding:4px 8px; border-radius:8px;
+  font-size:12px; background:#444; color:#fff;">IA: esperando…</div>
+
 
       <!-- Panel de depuración OCR -->
       <pre id="ocrDebug" style="
@@ -147,8 +146,9 @@
   </script>
 
   <!-- Lógica tuya -->
-  <script src="registrar.js"></script>
   <script src="ocr.js"></script>
+<script src="registrar.js"></script>
+
 
   <!-- Toggle Debug (solo UI) -->
   <script>
