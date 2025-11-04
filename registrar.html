@@ -54,16 +54,13 @@
         </div>
       </div>
 
-      <!-- =========== ACCIONES OCR =========== -->
+      <!-- =========== ESTADO OCR + DEBUG =========== -->
+      <div id="ocrStatus" class="validacion-msg"></div>
       <div class="actions-row" style="gap:8px; flex-wrap:wrap;">
-        <button id="btnProcesarTicket" type="button" class="btn-cta">
-          <span>Procesar ticket (OCR)</span>
-        </button>
         <button id="btnToggleDebug" type="button" class="btn-secondary" aria-expanded="false">
           🛠️ Mostrar depuración OCR
         </button>
       </div>
-      <div id="ocrStatus" class="validacion-msg"></div>
 
       <!-- Panel de depuración OCR -->
       <pre id="ocrDebug" style="
@@ -144,42 +141,17 @@
 
   <!-- Proxy IA (Firebase Functions Gen2) -->
   <script>
-    // 👇 Usa tu Function URL para llamar a ChatGPT sin exponer API key
-    window.OPENAI_PROXY_ENDPOINT = "https://us-central1-applebesapp.cloudfunctions.net/ocr";
+    // Usa la que prefieras (Functions clásica o Cloud Run directa)
+    window.OPENAI_PROXY_ENDPOINT = "https://ocr-3wbtuycfvq-uc.a.run.app";
+    // window.OPENAI_PROXY_ENDPOINT = "https://us-central1-applebesapp.cloudfunctions.net/ocr";
   </script>
 
   <!-- Lógica tuya -->
   <script src="registrar.js"></script>
   <script src="ocr.js"></script>
 
-  <!-- Drag & drop + Debug toggle -->
+  <!-- Toggle Debug (solo UI) -->
   <script>
-    const dz = document.getElementById('dropzone');
-    const fileInput = document.getElementById('ticketFile');
-
-    // click en zona = abrir input
-    dz.addEventListener('click', () => fileInput.click());
-
-    // arrastrar
-    dz.addEventListener('dragover', e => {
-      e.preventDefault();
-      dz.classList.add('drag');
-    });
-    dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-    dz.addEventListener('drop', e => {
-      e.preventDefault();
-      dz.classList.remove('drag');
-      if (e.dataTransfer.files?.length) {
-        fileInput.files = e.dataTransfer.files;
-      }
-    });
-
-    // botón "subir archivo"
-    document.getElementById('btnSeleccionarArchivo')?.addEventListener('click', () => {
-      fileInput.click();
-    });
-
-    // Botón depuración OCR (muestra/oculta <pre id="ocrDebug">)
     const btnDbg = document.getElementById('btnToggleDebug');
     const preDbg = document.getElementById('ocrDebug');
     btnDbg?.addEventListener('click', () => {
