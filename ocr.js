@@ -10,9 +10,9 @@ function dbgDump() {
 
 /* ====== IA ====== */
 // Opción A (directo) — deja vacío si usarás proxy:
-const OPENAI_API_KEY = ""; // p.ej. "sk-proj-xxxxxxxx", o vacío si usarás proxy
+const OPENAI_API_KEY = ""; 
 // Opción B (proxy Firebase Functions Gen2)
-const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // p.ej. "https://ocr-xxxxx-uc.a.run.app"
+const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; 
 
 /* ====== UI helpers ====== */
 function setIABadge(state, msg) {
@@ -510,3 +510,4 @@ async function processTicketWithIA(file) {
     catch { /* el catch interno ya muestra mensajes */ }
   });
 })();
+
