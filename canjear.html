@@ -39,7 +39,7 @@
     .reward-card .btn-cta { align-self:flex-start; }
     .reward-card a, .reward-card button { text-decoration:none; }
 
-    /* QR principal (más grande) */
+    /* QR principal  */
     .qr-box{ display:none; margin-top:20px; padding:16px;
       background: rgba(25,25,25,.7); border:1px solid rgba(255,255,255,.08);
       border-radius:16px; }
@@ -215,7 +215,7 @@
     }
     const modal = $('qrFullscreen');
     const img   = $('qrFsImg');
-    img.src = dataURL;            // se adapta con CSS (max-width/height)
+    img.src = dataURL;            
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden','false');
   }
@@ -408,7 +408,7 @@
       const fileName = `cupon_${reward.id}_${code}.png`;
       setTimeout(()=> prepareMainQrDownloadUI(fileName), 80);
 
-      // Abrir grande (principal): recalcula en el momento
+      // Abrir grande (principa)
       $('btnOpenQR').onclick = ()=> openQrFullscreenFromContainer(qrEl);
 
       $('qrBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -419,7 +419,7 @@
     }
   }
 
-  // ====== App ======
+  // ====== Apps ======
   document.getElementById('btnLogout').addEventListener('click', async () => {
     try { await auth.signOut(); location.href = 'index.html'; } catch (e) { alert('No se pudo cerrar sesión'); }
   });
@@ -463,3 +463,4 @@
   </script>
 </body>
 </html>
+
