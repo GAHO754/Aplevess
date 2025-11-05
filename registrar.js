@@ -1,4 +1,3 @@
-// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + espera de OCR listo
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -415,3 +414,4 @@
     console.error("[promise rejection]", e.reason || e);
   });
 })();
+
