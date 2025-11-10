@@ -39,7 +39,7 @@
     .reward-card .btn-cta { align-self:flex-start; }
     .reward-card a, .reward-card button { text-decoration:none; }
 
-    /* QR principal  */
+    /* QR principal */
     .qr-box{ display:none; margin-top:20px; padding:16px;
       background: rgba(25,25,25,.7); border:1px solid rgba(255,255,255,.08);
       border-radius:16px; }
@@ -78,9 +78,9 @@
       align-items:center; justify-content:center; padding:20px;
     }
     .qr-fullscreen__img {
-      max-width:92vw;           /* ancho máximo relativo a la pantalla */
-      max-height:82vh;          /* alto máximo relativo a la pantalla */
-      width:auto; height:auto;  /* que mantenga proporción */
+      max-width:92vw;
+      max-height:82vh;
+      width:auto; height:auto;
       background:#fff; border-radius:12px; padding:14px;
       box-shadow: 0 0 30px rgba(240,53,53,.45);
       display:block;
@@ -155,11 +155,11 @@
   <div id="qrFullscreen" class="qr-fullscreen" aria-hidden="true">
     <button id="qrFsClose" class="qr-fullscreen__close" type="button">Cerrar</button>
     <img id="qrFsImg" class="qr-fullscreen__img" alt="Cupón QR">
-    <div class="qr-fullscreen__hint">Presenta este QR al Gerente para recibir tu cortesia.</div>
+    <div class="qr-fullscreen__hint">Presenta este QR al Gerente para recibir tu cortesía.</div>
   </div>
 
   <script>
-  // ====== Firebase ======
+  // ===== Firebase =====
   if (!firebase.apps.length) {
     console.error('Firebase no está inicializado. Revisa firebase-config.js');
     alert('No se pudo inicializar Firebase. Verifica firebase-config.js');
@@ -172,12 +172,12 @@
 
   // Catálogo de recompensas
   const REWARDS = [
-    { id:'limonada',    name:'Limonada 16 oz',       cost:10 },
-    { id:'Ensalada cesar', name:'Ensalada Cesar',    cost:25 },
-    { id:'Chiken Burger',  name:'Hamburguesa de pollo', cost:32 },
-    { id:'hamburguesa', name:'Hamburguesa sencilla', cost:300 },
-    { id:'brownie',     name:'Brownie con helado',   cost:450 },
-    { id:'combo-kids',  name:'Combo infantil',       cost:600 },
+    { id:'limonada',       name:'Limonada 16 oz',          cost:10 },
+    { id:'ensalada-cesar', name:'Ensalada Cesar',          cost:25 },
+    { id:'chicken-burger', name:'Hamburguesa de pollo',    cost:32 },
+    { id:'hamburguesa',    name:'Hamburguesa sencilla',    cost:300 },
+    { id:'brownie',        name:'Brownie con helado',      cost:450 },
+    { id:'combo-kids',     name:'Combo infantil',          cost:600 },
   ];
   function renderRewards(){
     $('rewardsGrid').innerHTML = REWARDS.map(r => `
@@ -193,12 +193,11 @@
   function daysLeft(ms){ if(!ms) return -999; return Math.ceil((ms - Date.now())/86400000); }
 
   // Estado
-  let _tickets = [];     // tickets RTDB
-  let _redemps = [];     // redemptions espejo RTDB
-  let _pointsNode = 0;   // users/{uid}/points (número)
-  let _syncedOnce = false;
+  let _tickets = [];
+  let _redemps = [];
+  let _pointsNode = 0;
 
-  // ====== Utilidades de QR ======
+  // ===== Utilidades de QR =====
   function getDataURLFrom(el){
     if (!el) return null;
     const img = el.querySelector('img');
@@ -209,13 +208,9 @@
   }
   function openQrFullscreenFromContainer(containerEl){
     const dataURL = getDataURLFrom(containerEl);
-    if (!dataURL) {
-      alert('Aún no está listo el QR. Intenta de nuevo en un momento.');
-      return;
-    }
+    if (!dataURL) { alert('Aún no está listo el QR. Intenta de nuevo.'); return; }
     const modal = $('qrFullscreen');
-    const img   = $('qrFsImg');
-    img.src = dataURL;            
+    $('qrFsImg').src = dataURL;
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden','false');
   }
@@ -226,7 +221,7 @@
     modal.addEventListener('click', (e)=>{ if(e.target===modal) btnClose.click(); });
   })();
 
-  // ====== Cálculos y render ======
+  // ===== Cálculo y render =====
   function recalcAndRender() {
     const rows = [];
     let ptsTicketsActivos = 0;
@@ -249,18 +244,23 @@
     });
     tbody.innerHTML = rows.length ? rows.join('') : `<tr><td colspan="3" class="warn">Sin puntos registrados.</td></tr>`;
 
-    const spent = _redemps.filter(r => String(r.status).toLowerCase()==='canjeado')
-                          .reduce((a,r)=> a + (Number(r.cost)||0), 0);
-    const now = Date.now();
-    const reserved = _redemps.filter(r => String(r.status).toLowerCase()==='pendiente')
-                             .filter(r => !r.expiresAt || Number(r.expiresAt) > now)
-                             .reduce((a,r)=> a + (Number(r.cost)||0), 0);
+    const spent = _redemps
+      .filter(r => String(r.status).toLowerCase()==='canjeado')
+      .reduce((a,r)=> a + (Number(r.cost)||0), 0);
 
+    const now = Date.now();
+    const reserved = _redemps
+      .filter(r => String(r.status).toLowerCase()==='pendiente')
+      .filter(r => !r.expiresAt || Number(r.expiresAt) > now)
+      .reduce((a,r)=> a + (Number(r.cost)||0), 0);
+
+    // SALDO CORRECTO
     const calculatedAvailable = Math.max(0, ptsTicketsActivos - spent - reserved);
-    const effectiveAvailable = Math.max(calculatedAvailable, Number(_pointsNode||0));
+
+    // Mostrar SIEMPRE lo calculado
     const span = $('puntosActivos');
-    span.textContent = String(effectiveAvailable);
-    span.dataset.value = String(effectiveAvailable);
+    span.textContent = String(calculatedAvailable);
+    span.dataset.value = String(calculatedAvailable);
 
     $('avisoVencen').textContent = proximos.length
       ? `⚠️ ${proximos.reduce((a,b)=>a+b.pts,0)} pts vencen en ~${Math.min(...proximos.map(p=>p.left))} día(s).`
@@ -269,15 +269,13 @@
       ? `Tienes ${reserved} pts reservados en cupones pendientes.`
       : '';
 
+    // Sincronizar /points si está distinto
     const badge = $('syncBadge');
-    if (!_syncedOnce && (Number(_pointsNode||0) < calculatedAvailable)) {
-      const user = auth.currentUser;
-      if (user) {
-        _syncedOnce = true;
-        db.ref(`users/${user.uid}/points`).set(calculatedAvailable)
-          .then(()=>{ _pointsNode = calculatedAvailable; badge.style.display='inline'; })
-          .catch(()=>{});
-      }
+    const user = auth.currentUser;
+    if (user && Number(_pointsNode||0) !== calculatedAvailable) {
+      db.ref(`users/${user.uid}/points`).set(calculatedAvailable)
+        .then(()=>{ _pointsNode = calculatedAvailable; badge.style.display='inline'; })
+        .catch(()=>{ /* silencioso */ });
     } else {
       badge.style.display='none';
     }
@@ -332,7 +330,6 @@
         el.innerHTML = '';
         new QRCode(el, { text: d.qrPayload, width: 180, height: 180 });
 
-        // Botones que dependen del QR ya renderizado
         setTimeout(()=>{
           const dataURL = getDataURLFrom(el);
           const a = document.getElementById(dlId);
@@ -341,7 +338,6 @@
             const fileName = `cupon_${d.rewardId||'reward'}_${id}.png`;
             a.href = dataURL; a.setAttribute('download', fileName); a.style.display='inline-flex';
           }
-          // Para robustez: al abrir grande se vuelve a leer del contenedor (por si aún no estaba listo)
           big.onclick = ()=> openQrFullscreenFromContainer(el);
         }, 80);
       }
@@ -371,6 +367,7 @@
       return alert(`Te faltan ${reward.cost - disponibles} puntos para canjear ${reward.name}.`);
     }
 
+    // Reserva en /points (que ya está sincronizado al calculado)
     const tx = await db.ref(`users/${user.uid}/points`).transaction(curr => {
       const prev = Number(curr)||0;
       if (prev < reward.cost) return;
@@ -408,9 +405,7 @@
       const fileName = `cupon_${reward.id}_${code}.png`;
       setTimeout(()=> prepareMainQrDownloadUI(fileName), 80);
 
-      // Abrir grande (principa)
       $('btnOpenQR').onclick = ()=> openQrFullscreenFromContainer(qrEl);
-
       $('qrBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
       await db.ref(`users/${user.uid}/points`).transaction(curr => (Number(curr)||0) + reward.cost);
@@ -419,7 +414,7 @@
     }
   }
 
-  // ====== Apps ======
+  // ===== App =====
   document.getElementById('btnLogout').addEventListener('click', async () => {
     try { await auth.signOut(); location.href = 'index.html'; } catch (e) { alert('No se pudo cerrar sesión'); }
   });
@@ -463,4 +458,3 @@
   </script>
 </body>
 </html>
-
