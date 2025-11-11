@@ -23,7 +23,6 @@
       border-bottom: 1px solid rgba(255,255,255,.06);
     }
     .applebees-title{ font-size:20px; margin:0; letter-spacing:.2px }
-    .center-section p{ margin:0; font-weight:700; color:#f7d7c2; font-size:16px }
     .right-actions{ display:flex; align-items:center; gap:10px }
     .btn-logout{
       background:#e71e1e; color:#fff; border:0; border-radius:12px;
@@ -67,11 +66,10 @@
     .video-wrap{ width:100%; aspect-ratio:16/9; background:#000; border-radius:10px; overflow:hidden }
     .video-wrap video{ width:100%; height:100%; object-fit:cover }
 
-    /* Esconder saludo del centro en pantallas muy chicas */
+    /* En XS oculto el botón Registrar para ahorrar espacio (si lo quieres visible, quita esta regla) */
     @media (max-width:430px){
-      .center-section{ display:none }
       .applebees-title{ font-size:18px }
-      .right-actions .btn-secondary{ display:none } /* oculta "+ Registrar" en XS (se puede poner dentro del menú si lo deseas) */
+      .right-actions .btn-secondary{ display:none }
     }
 
     /* ======= MODAL PERFIL ======= */
@@ -93,11 +91,9 @@
 </head>
 
 <body class="bg-animated">
-  <!-- ======= HEADER ======= -->
+  <!-- ======= HEADER SIN SALUDO ======= -->
   <header class="top-bar">
     <div class="left-section"><h1 class="applebees-title">Applebee’s</h1></div>
-
-    <div class="center-section"><p id="userGreeting">Panel</p></div>
 
     <div class="right-actions">
       <a class="btn-secondary" href="registrar.html">+ Registrar ticket</a>
@@ -183,9 +179,7 @@
 
     // ====== Helpers ======
     const $ = (sel)=> document.querySelector(sel);
-    const $$ = (sel)=> document.querySelectorAll(sel);
     const tbody = document.querySelector('#tablaTickets tbody');
-    const VENCE_EN_DIAS = 180;
 
     function fmtDate(millis){
       if(!millis) return '';
@@ -240,9 +234,9 @@
       }).join('');
 
       tbody.innerHTML = rows || `<tr><td colspan="6" class="warn">Sin tickets aún.</td></tr>`;
-      $('#statTickets').textContent = totalTickets;
-      $('#statVisitas').textContent = visitas;
-      $('#statPuntosVencidos').textContent = ptsVencidos;
+      document.getElementById('statTickets').textContent = totalTickets;
+      document.getElementById('statVisitas').textContent = visitas;
+      document.getElementById('statPuntosVencidos').textContent = ptsVencidos;
 
       window.__ptsActivosTickets = ptsActivosTickets;
       window.__proximos = proximos;
@@ -262,11 +256,11 @@
         .reduce((a,r)=> a + (Number(r.cost)||0), 0);
 
       const disponibles = Math.max(0, ptsActivosTickets - spentByRedeemed - reservedPending);
-      $('#statPuntosActivos').textContent = disponibles;
-      $('#statPuntosProx').textContent = proximos.length
+      document.getElementById('statPuntosActivos').textContent = disponibles;
+      document.getElementById('statPuntosProx').textContent = proximos.length
         ? `⚠️ ${proximos.reduce((a,b)=>a+b.pts,0)} pts vencen en ~${Math.min(...proximos.map(p=>p.left))} día(s).`
         : '';
-      $('#statPuntosDetalle').textContent =
+      document.getElementById('statPuntosDetalle').textContent =
         (reservedPending>0 || spentByRedeemed>0) ? `Reservados: ${reservedPending} pts · Canjeados: ${spentByRedeemed} pts` : '';
     }
 
@@ -276,12 +270,11 @@
     }
 
     // ====== Perfil (avatar + modal) ======
-    const perfilModal = $('#perfilModal');
-    const perfilName  = $('#perfilName');
-    const perfilFile  = $('#perfilFile');
-    const perfilPrev  = $('#perfilPreview');
-    const avatarBtn   = $('#avatarBtn');
-    const avatarInitials = $('#avatarInitials');
+    const perfilModal = document.getElementById('perfilModal');
+    const perfilName  = document.getElementById('perfilName');
+    const perfilFile  = document.getElementById('perfilFile');
+    const perfilPrev  = document.getElementById('perfilPreview');
+    const avatarBtn   = document.getElementById('avatarBtn');
 
     function openPerfil(){
       perfilModal.style.display = 'grid';
@@ -293,9 +286,8 @@
       perfilModal.setAttribute('aria-hidden','true');
       perfilFile.value=''; // limpia file
     }
-
-    $('#perfilClose').addEventListener('click', closePerfil);
-    $('#perfilCancel').addEventListener('click', closePerfil);
+    document.getElementById('perfilClose').addEventListener('click', closePerfil);
+    document.getElementById('perfilCancel').addEventListener('click', closePerfil);
     avatarBtn.addEventListener('click', openPerfil);
     perfilModal.addEventListener('click', (e)=>{ if(e.target === perfilModal) closePerfil(); });
 
@@ -309,22 +301,16 @@
     });
 
     // Guardar cambios (nombre + foto opcional)
-    $('#perfilSave').addEventListener('click', async ()=>{
+    document.getElementById('perfilSave').addEventListener('click', async ()=>{
       const displayName = perfilName.value.trim();
       let photoURL = perfilPrev?.src || '';
 
       try{
         if(!currentUser) throw new Error('No hay usuario');
-
-        // Actualiza Firebase Auth (sin Storage; usamos DataURL si eligieron imagen)
         await currentUser.updateProfile({ displayName, photoURL: photoURL || currentUser.photoURL || '' });
-
-        // Guarda en RTDB (útil para otras vistas)
         const profile = { displayName, photoURL: photoURL || null, updatedAt: Date.now() };
         await db.ref(`users/${currentUser.uid}/profile`).update(profile);
-
-        // Refresca UI
-        setGreetingAndAvatar(currentUser);
+        setAvatar(currentUser, displayName);
         closePerfil();
       }catch(err){
         console.error(err);
@@ -332,24 +318,20 @@
       }
     });
 
-    function setGreetingAndAvatar(user){
-      const name = user.displayName || user.email || 'Usuario';
-      $('#userGreeting').textContent = `Hola, ${name}`;
-      perfilName.value = name;
-
+    function setAvatar(user, nameFallback){
+      const name = user.displayName || nameFallback || user.email || 'Usuario';
       const userRef = db.ref(`users/${user.uid}/profile`);
       userRef.once('value').then(s=>{
         const p = s.val() || {};
         const foto = p.photoURL || user.photoURL || '';
         if(foto){
-          // Poner foto en avatar
-          avatarBtn.innerHTML = `<img alt="avatar" src="${foto}">`;
-          perfilPrev.src = foto;
+          document.getElementById('avatarBtn').innerHTML = `<img alt="avatar" src="${foto}">`;
+          if(perfilPrev) perfilPrev.src = foto;
         }else{
-          // Iniciales
-          avatarBtn.innerHTML = `<span id="avatarInitials">${initialsFromName(name)}</span>`;
-          perfilPrev.removeAttribute('src');
+          document.getElementById('avatarBtn').innerHTML = `<span>${initialsFromName(name)}</span>`;
+          if(perfilPrev) perfilPrev.removeAttribute('src');
         }
+        perfilName.value = name;
       });
     }
 
@@ -357,13 +339,12 @@
     auth.onAuthStateChanged((user)=>{
       currentUser = user;
       if(!user){
-        $('#userGreeting').textContent = "Inicia sesión";
         showError("No hay sesión activa.");
         return;
       }
 
-      // Saludo + avatar
-      setGreetingAndAvatar(user);
+      // Avatar (sin saludo en header)
+      setAvatar(user);
 
       // Tickets
       const tRef = db.ref(`users/${user.uid}/tickets`);
