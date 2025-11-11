@@ -9,11 +9,20 @@
 
   <!-- OCR (Tesseract) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+  <style>
+    /* Compacta un poco el header aquí (opcional) */
+    .top-bar{height:56px;padding:10px 12px}
+    .applebees-title{font-size:20px;margin:0}
+    @media (max-width:430px){
+      /* sin centro, no hace falta espacio extra en móvil */
+    }
+  </style>
 </head>
 <body class="bg-animated">
+  <!-- ======= HEADER SIN SALUDO ======= -->
   <header class="top-bar">
     <div class="left-section"><h1 class="applebees-title">Applebee’s</h1></div>
-    <div class="center-section"><p id="userGreeting">Registro de ticket</p></div>
     <div class="right-section">
       <a class="btn-secondary" href="panel.html">← Regresar</a>
     </div>
@@ -56,10 +65,9 @@
 
       <!-- =========== ESTADO OCR + DEBUG =========== -->
       <div id="ocrStatus" class="validacion-msg"></div>
-<div id="iaBadge" style="
-  display:inline-block; margin-top:6px; padding:4px 8px; border-radius:8px;
-  font-size:12px; background:#444; color:#fff;">IA: esperando…</div>
-
+      <div id="iaBadge" style="
+        display:inline-block; margin-top:6px; padding:4px 8px; border-radius:8px;
+        font-size:12px; background:#444; color:#fff;">IA: esperando…</div>
 
       <!-- Panel de depuración OCR -->
       <pre id="ocrDebug" style="
@@ -147,8 +155,7 @@
 
   <!-- Lógica tuya -->
   <script src="ocr.js"></script>
-<script src="registrar.js"></script>
-
+  <script src="registrar.js"></script>
 
   <!-- Toggle Debug (solo UI) -->
   <script>
