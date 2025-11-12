@@ -130,32 +130,65 @@
   }
 
   // =========================
-  //  PARSER PRECISO DE TICKET
+  //  Limpieza y correcciones OCR
   // =========================
-  const rxMoney = /(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/;
-  const rxDate  = /\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b/; // dd/mm/aaaa
-  const rxHour  = /\b\d{1,2}:\d{2}\s?(?:AM|PM)?\b/i;
-
-  function norm(text){
-    return String(text||'')
-      .replace(/\u00A0/g,' ')                // nbsp
-      .replace(/[|]+/g,' ')
-      .replace(/[·••]/g,' ')
-      .replace(/\t+/g,' ')
-      .replace(/ {2,}/g,' ')
+  function cleanOCR(raw) {
+    let t = String(raw||'')
+      .replace(/\u00A0/g,' ')           // NBSP
+      .replace(/[|·•]+/g,' ')
+      .replace(/[^\S\r\n]{2,}/g,' ')    // espacios repetidos
+      .replace(/[=]{2,}/g,'=')
+      .replace(/[^\x09\x0A\x0D\x20-\x7EÁÉÍÓÚÑáéíóúñ]/g,'') // caracteres raros
+      .replace(/\r/g,'')
       .trim();
+
+    // Normaliza confusiones comunes de OCR en contexto mixto
+    t = t
+      .replace(/\bI(\d{4})\b/g,'1$1')
+      .replace(/\b(\d{2})O(\d{2})\b/g,'$1 0 $2')
+      .replace(/(\d)[S](\d)/g,'$15$2')
+      .replace(/(\d)[B](\d)/g,'$18$2')
+      .replace(/(\d)Z(\d)/g,'$12$2');
+
+    return t;
   }
 
+  // Correcciones de nombres de productos
+  const PRODUCT_FIX = [
+    [/pa\s*Gado/i, 'Papa Gajo'],
+    [/Chllaquiles|Chilaqulles|Chllaqulles/i, 'Chilaquiles'],
+    [/Huevo[s]?\s*a[l]?\s*Gusto/i, 'Huevos al Gusto'],
+    [/Desayuno?s?\s*2x1?/i, 'Desayunos 2x1'],
+    [/Mole\s*C\/?\s*Huevo/i, 'Mole c/ Huevo'],
+  ];
+
+  function fixProductName(name) {
+    let s = String(name||'').trim();
+    PRODUCT_FIX.forEach(([re, rep]) => { s = s.replace(re, rep); });
+    // quita basura residual tipo “TT”, “Ea”, signos
+    s = s.replace(/\bTT\b|\bEa\b/gi, '')
+         .replace(/\s{2,}/g,' ')
+         .replace(/[=·•]+$/,'')
+         .trim();
+    return s;
+  }
+
+  // =========================
+  //  PARSER PRECISO DE TICKET
+  // =========================
   function parseTicketFromText(raw){
-    const text = norm(raw).replace(/\r/g,'');
+    const rxMoney = /(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/;
+    const rxDate  = /\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b/; // dd/mm/aaaa
+    const rxHour  = /\b\d{1,2}:\d{2}\s?(?:AM|PM)?\b/i;
+
+    const text = cleanOCR(raw);
     const lines = text.split('\n').map(s=>s.trim()).filter(Boolean);
 
-    // ---- Fecha (primera dd/mm/aaaa en el documento)
+    // --- FECHA: primera dd/mm/aaaa ---
     let fechaISO = '';
     for (const l of lines){
       const m = l.match(rxDate);
       if (m){
-        // a veces viene 30/10/25 -> normaliza a 2025
         let [_, d, mo, y] = m;
         if (y.length===2) y = (+y < 50 ? '20'+y : '19'+y);
         const dd = String(d).padStart(2,'0');
@@ -165,7 +198,7 @@
       }
     }
 
-    // ---- Folio: 5 dígitos, preferentemente cercano a la HORA
+    // --- FOLIO: 5 dígitos cerca de la hora ---
     let folio = '';
     let hourIndex = lines.findIndex(l => rxHour.test(l));
     if (hourIndex === -1) hourIndex = 0;
@@ -175,13 +208,12 @@
       const m = lines[i].match(/\b(\d{5})\b/);
       if (m){ folio = m[1]; break; }
     }
-    // fallback: primera ocurrencia de 5 dígitos
     if (!folio){
       const m = text.match(/\b(\d{5})\b/);
       if (m) folio = m[1];
     }
 
-    // ---- Total: prioriza línea "Total" o "Impt.Total"
+    // --- TOTAL: prioriza "Total" o "Impt.Total" ---
     let total = null;
     for (let i=0;i<lines.length;i++){
       if (/^total\b/i.test(lines[i]) || /impt\.?total/i.test(lines[i])){
@@ -189,53 +221,59 @@
         if (m){ total = parseFloat(m[1].replace(/\./g,'').replace(',','.')); break; }
       }
     }
-    // fallback: último número con decimales del documento
     if (total==null){
-      const all = [...text.matchAll(rxMoney)].map(m=>m[1]);
-      if (all.length){
-        const last = all[all.length-1];
-        total = parseFloat(last.replace(/\./g,'').replace(',','.'));
+      // fallback: "Efectivo" o último importe del ticket
+      for (let i=lines.length-1; i>=0; i--){
+        if (/efectivo/i.test(lines[i]) && rxMoney.test(lines[i])){
+          total = parseFloat(lines[i].match(rxMoney)[1].replace(/\./g,'').replace(',','.')); break;
+        }
+      }
+      if (total==null){
+        const all = [...text.matchAll(rxMoney)].map(m=>m[1]);
+        if (all.length){ total = parseFloat(all[all.length-1].replace(/\./g,'').replace(',','.')); }
       }
     }
 
-    // ---- Productos: entre primera línea de item y "Sub-total"
-    const proms = /(2x1|promo|promocion|desayunos? ?2x1|desayuno 2x1)/i;
+    // --- PRODUCTOS: entre items y "Sub-total" ---
+    const proms = /(2x1|promo|promocion|desayunos? ?2x1)/i;
     const stopIdx = lines.findIndex(l => /sub[\s-]?total/i.test(l));
     let firstItemIdx = -1;
     for (let i=0;i<lines.length;i++){
-      // heurística: línea con nombre y/o precio, no contiene "mesa", "mesero", "cliente", etc.
-      if (!/(mesero|mesa|clientes?|reimpresion|fecha|hora|total|iva|impuesto|cuenta|efectivo|cambio|cp)/i.test(lines[i])){
+      if (!/(mesero|mesa|clientes?|reimpresion|fecha|hora|total|iva|impuesto|cuenta|efectivo|cambio|cp|regimen)/i.test(lines[i])){
         if (rxMoney.test(lines[i]) || (lines[i+1] && rxMoney.test(lines[i+1]))){
           firstItemIdx = i; break;
         }
       }
     }
+
     const products = [];
     if (firstItemIdx>=0){
-      const end = stopIdx>firstItemIdx ? stopIdx : Math.min(lines.length, firstItemIdx+18);
+      const end = stopIdx>firstItemIdx ? stopIdx : Math.min(lines.length, firstItemIdx+20);
       for (let i=firstItemIdx; i<end; i++){
         let name = lines[i];
         if (!name || proms.test(name)) continue;
 
-        // caso "Nombre .... 229.00" (misma línea)
+        // mismo renglón: "Nombre .... 229.00"
         let m = name.match(rxMoney);
         if (m){
           const price = parseFloat(m[1].replace(/\./g,'').replace(',','.'));
-          name = name.replace(rxMoney,'').trim().replace(/[.\-]+$/,'').trim();
+          name = name.replace(rxMoney,'').replace(/[.\-]+$/,'').trim();
+          name = fixProductName(name);
           if (name && !proms.test(name)) products.push({ name, qty:1, price });
           continue;
         }
 
-        // caso "Nombre" en línea y precio en la siguiente
+        // siguiente renglón tiene el precio
         if (i+1 < end && rxMoney.test(lines[i+1]) && !proms.test(lines[i+1])){
           const price = parseFloat(lines[i+1].match(rxMoney)[1].replace(/\./g,'').replace(',','.'));
-          name = name.replace(/[.\-]+$/,'').trim();
+          name = fixProductName(name.replace(/[.\-]+$/,'').trim());
           if (name) products.push({ name, qty:1, price });
-          i++; // consume también la línea del precio
+          i++;
           continue;
         }
 
-        // si no hay precio, igual agregamos el nombre (qty=1) para puntos base
+        // sin precio, igual lo tomamos
+        name = fixProductName(name);
         if (name && !proms.test(name)) products.push({ name, qty:1 });
       }
     }
@@ -246,7 +284,6 @@
   function applyParsedFields(parsed){
     if (!parsed) return;
 
-    // set inputs si hay valores válidos
     if (parsed.folio && /^\d{5}$/.test(parsed.folio) && iNum){
       iNum.value = parsed.folio;
     }
@@ -257,7 +294,6 @@
       iTotal.value = parsed.total.toFixed(2);
     }
 
-    // emite productos hacia tu pipeline existente
     if (Array.isArray(parsed.productos)){
       const evt = new CustomEvent('ocr:productos', { detail: parsed.productos });
       document.dispatchEvent(evt);
@@ -265,8 +301,6 @@
   }
 
   // ==== Puente con ocr.js ====
-  // 1) Si processTicketWithIA(file) devuelve {text, ...}, lo usamos.
-  // 2) Si ocr.js emite 'ocr:text' con detail { text }, también lo usamos.
   async function waitForOCR(tries = 30, delayMs = 100) {
     for (let i = 0; i < tries; i++) {
       if (typeof window.processTicketWithIA === "function") return true;
@@ -290,7 +324,6 @@
     try {
       setStatus("🕐 Escaneando ticket…");
       const ret = await window.processTicketWithIA(file);
-      // si nos regresan el texto directamente
       const rawText = ret?.text || ret?.rawText || ret?.ocrText;
       if (rawText){
         const parsed = parseTicketFromText(rawText);
@@ -469,6 +502,7 @@
 
       productos = [{ name:"Consumo Applebee's", qty:1, price: totalNum, pointsUnit: pts }];
       detalle   = [{ producto:"Consumo Applebee's", cantidad:1, puntos_unitarios:pts, puntos_subtotal:pts }];
+
       puntosTotal = pts;
       renderProductos();
     }
@@ -543,11 +577,16 @@
   // ===== Sesión y eventos =====
   auth.onAuthStateChanged(user=>{
     isLogged=!!user;
-    if (!user){ greetEl && (greetEl.textContent="Inicia sesión para registrar tickets"); btnRegistrar && (btnRegistrar.disabled=true); }
-    else { greetEl && (greetEl.textContent=`Registro de ticket — ${user.email}`); btnRegistrar && (btnRegistrar.disabled=false); }
+    if (!user){
+      greetEl && (greetEl.textContent="Inicia sesión para registrar tickets");
+      btnRegistrar && (btnRegistrar.disabled=true);
+    } else {
+      greetEl && (greetEl.textContent=`Registro de ticket — ${user.email}`);
+      btnRegistrar && (btnRegistrar.disabled=false);
+    }
   });
 
-  // recibe productos desde ocr.js (también los emitimos desde el parser)
+  // recibe productos desde ocr.js (y desde applyParsedFields)
   document.addEventListener('ocr:productos', ev=>{
     const det = ev.detail || [];
     productos = [];
