@@ -40,7 +40,7 @@
     }
     .avatar img{ width:100%; height:100%; object-fit:cover; border-radius:50%; display:block }
 
-    /* ======= LAYOUT RESPONSIVE + MENOS ESPACIO ======= */
+    /* ======= LAYOUT ======= */
     .dashboard{ max-width:980px; margin:64px auto 48px; padding:12px }
     .stats{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:14px }
     @media (min-width:880px){ .stats{ grid-template-columns:repeat(4,minmax(0,1fr)); } }
@@ -66,10 +66,30 @@
     .video-wrap{ width:100%; aspect-ratio:16/9; background:#000; border-radius:10px; overflow:hidden }
     .video-wrap video{ width:100%; height:100%; object-fit:cover }
 
-    /* En XS oculto el botón Registrar para ahorrar espacio (si lo quieres visible, quita esta regla) */
+    /* En XS antes ocultábamos el botón del header; lo seguimos ocultando y
+       lo mostraremos en la SUB-BARRA inferior para que siempre esté visible. */
     @media (max-width:430px){
       .applebees-title{ font-size:18px }
       .right-actions .btn-secondary{ display:none }
+    }
+
+    /* ======= SUB-BARRA MÓVIL ======= */
+    .subbar{
+      display:none;
+      position:sticky;
+      top:56px;             /* justo debajo del header */
+      z-index:39;
+      padding:8px 12px;
+      background:linear-gradient(180deg,#1a1616,#1b1313);
+      border-bottom:1px solid rgba(255,255,255,.06);
+    }
+    .btn-sub-registrar{
+      padding:8px 12px;
+      border-radius:12px;
+    }
+    @media (max-width:430px){
+      .subbar{ display:flex; align-items:center; gap:8px }
+      .dashboard{ margin-top:96px }  /* empuja el contenido porque hay dos barras */
     }
 
     /* ======= MODAL PERFIL ======= */
@@ -106,6 +126,11 @@
       <button id="btnLogout" class="btn-logout" type="button">Cerrar Sesion</button>
     </div>
   </header>
+
+  <!-- ======= SUB-BARRA SOLO EN MÓVIL ======= -->
+  <div class="subbar">
+    <a class="btn-secondary btn-sub-registrar" href="registrar.html">+ Registrar ticket</a>
+  </div>
 
   <!-- ======= CONTENIDO ======= -->
   <main class="dashboard">
@@ -391,4 +416,3 @@
   </script>
 </body>
 </html>
-
