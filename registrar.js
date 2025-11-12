@@ -1,4 +1,4 @@
-// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + espera de OCR listo
+// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + parser preciso
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -17,8 +17,8 @@
   const btnShot      = $('btnCapturar');
   const ocrStatus    = $('ocrStatus');
 
-  const iNum   = $('inputTicketNumero');
-  const iFecha = $('inputTicketFecha');
+  const iNum   = $('inputTicketNumero');   // folio (5 dígitos)
+  const iFecha = $('inputTicketFecha');    // <input type="date">
   const iTotal = $('inputTicketTotal');
 
   const listaProd    = $('listaProductos');
@@ -60,7 +60,6 @@
     Desayunos: ["Chilaquiles","Huevos rancheros","omelette light","huevo c/ chicharron","bagel de huevo"],
     Tacos: ["Tacos de sirloin"],
     Ensalada:["Ensalada col ribs","buffalo salad",""]
-
   };
   const POINT_RANGES = {
     burgers:[7,15], costillas:[7,15], cortes:[7,15], pescado:[6,14], pollo:[6,13], pastas:[6,13], texmex:[6,14],
@@ -130,7 +129,144 @@
     return file;
   }
 
-  // ==== Espera a OCR expuesto por ocr.js ====
+  // =========================
+  //  PARSER PRECISO DE TICKET
+  // =========================
+  const rxMoney = /(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/;
+  const rxDate  = /\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b/; // dd/mm/aaaa
+  const rxHour  = /\b\d{1,2}:\d{2}\s?(?:AM|PM)?\b/i;
+
+  function norm(text){
+    return String(text||'')
+      .replace(/\u00A0/g,' ')                // nbsp
+      .replace(/[|]+/g,' ')
+      .replace(/[·••]/g,' ')
+      .replace(/\t+/g,' ')
+      .replace(/ {2,}/g,' ')
+      .trim();
+  }
+
+  function parseTicketFromText(raw){
+    const text = norm(raw).replace(/\r/g,'');
+    const lines = text.split('\n').map(s=>s.trim()).filter(Boolean);
+
+    // ---- Fecha (primera dd/mm/aaaa en el documento)
+    let fechaISO = '';
+    for (const l of lines){
+      const m = l.match(rxDate);
+      if (m){
+        // a veces viene 30/10/25 -> normaliza a 2025
+        let [_, d, mo, y] = m;
+        if (y.length===2) y = (+y < 50 ? '20'+y : '19'+y);
+        const dd = String(d).padStart(2,'0');
+        const mm = String(mo).padStart(2,'0');
+        fechaISO = `${y}-${mm}-${dd}`;
+        break;
+      }
+    }
+
+    // ---- Folio: 5 dígitos, preferentemente cercano a la HORA
+    let folio = '';
+    let hourIndex = lines.findIndex(l => rxHour.test(l));
+    if (hourIndex === -1) hourIndex = 0;
+    const windowStart = Math.max(0, hourIndex-2);
+    const windowEnd   = Math.min(lines.length-1, hourIndex+4);
+    for (let i=windowStart; i<=windowEnd; i++){
+      const m = lines[i].match(/\b(\d{5})\b/);
+      if (m){ folio = m[1]; break; }
+    }
+    // fallback: primera ocurrencia de 5 dígitos
+    if (!folio){
+      const m = text.match(/\b(\d{5})\b/);
+      if (m) folio = m[1];
+    }
+
+    // ---- Total: prioriza línea "Total" o "Impt.Total"
+    let total = null;
+    for (let i=0;i<lines.length;i++){
+      if (/^total\b/i.test(lines[i]) || /impt\.?total/i.test(lines[i])){
+        const m = lines[i].match(rxMoney) || (lines[i+1]?.match(rxMoney));
+        if (m){ total = parseFloat(m[1].replace(/\./g,'').replace(',','.')); break; }
+      }
+    }
+    // fallback: último número con decimales del documento
+    if (total==null){
+      const all = [...text.matchAll(rxMoney)].map(m=>m[1]);
+      if (all.length){
+        const last = all[all.length-1];
+        total = parseFloat(last.replace(/\./g,'').replace(',','.'));
+      }
+    }
+
+    // ---- Productos: entre primera línea de item y "Sub-total"
+    const proms = /(2x1|promo|promocion|desayunos? ?2x1|desayuno 2x1)/i;
+    const stopIdx = lines.findIndex(l => /sub[\s-]?total/i.test(l));
+    let firstItemIdx = -1;
+    for (let i=0;i<lines.length;i++){
+      // heurística: línea con nombre y/o precio, no contiene "mesa", "mesero", "cliente", etc.
+      if (!/(mesero|mesa|clientes?|reimpresion|fecha|hora|total|iva|impuesto|cuenta|efectivo|cambio|cp)/i.test(lines[i])){
+        if (rxMoney.test(lines[i]) || (lines[i+1] && rxMoney.test(lines[i+1]))){
+          firstItemIdx = i; break;
+        }
+      }
+    }
+    const products = [];
+    if (firstItemIdx>=0){
+      const end = stopIdx>firstItemIdx ? stopIdx : Math.min(lines.length, firstItemIdx+18);
+      for (let i=firstItemIdx; i<end; i++){
+        let name = lines[i];
+        if (!name || proms.test(name)) continue;
+
+        // caso "Nombre .... 229.00" (misma línea)
+        let m = name.match(rxMoney);
+        if (m){
+          const price = parseFloat(m[1].replace(/\./g,'').replace(',','.'));
+          name = name.replace(rxMoney,'').trim().replace(/[.\-]+$/,'').trim();
+          if (name && !proms.test(name)) products.push({ name, qty:1, price });
+          continue;
+        }
+
+        // caso "Nombre" en línea y precio en la siguiente
+        if (i+1 < end && rxMoney.test(lines[i+1]) && !proms.test(lines[i+1])){
+          const price = parseFloat(lines[i+1].match(rxMoney)[1].replace(/\./g,'').replace(',','.'));
+          name = name.replace(/[.\-]+$/,'').trim();
+          if (name) products.push({ name, qty:1, price });
+          i++; // consume también la línea del precio
+          continue;
+        }
+
+        // si no hay precio, igual agregamos el nombre (qty=1) para puntos base
+        if (name && !proms.test(name)) products.push({ name, qty:1 });
+      }
+    }
+
+    return { folio, fechaISO, total, productos: products };
+  }
+
+  function applyParsedFields(parsed){
+    if (!parsed) return;
+
+    // set inputs si hay valores válidos
+    if (parsed.folio && /^\d{5}$/.test(parsed.folio) && iNum){
+      iNum.value = parsed.folio;
+    }
+    if (parsed.fechaISO && /^\d{4}-\d{2}-\d{2}$/.test(parsed.fechaISO) && iFecha){
+      iFecha.value = parsed.fechaISO;
+    }
+    if (typeof parsed.total === 'number' && !Number.isNaN(parsed.total) && iTotal){
+      iTotal.value = parsed.total.toFixed(2);
+    }
+
+    // emite productos hacia tu pipeline existente
+    if (Array.isArray(parsed.productos)){
+      const evt = new CustomEvent('ocr:productos', { detail: parsed.productos });
+      document.dispatchEvent(evt);
+    }
+  }
+
+  // ==== Puente con ocr.js ====
+  // 1) Si processTicketWithIA(file) devuelve {text, ...}, lo usamos.
+  // 2) Si ocr.js emite 'ocr:text' con detail { text }, también lo usamos.
   async function waitForOCR(tries = 30, delayMs = 100) {
     for (let i = 0; i < tries; i++) {
       if (typeof window.processTicketWithIA === "function") return true;
@@ -153,12 +289,29 @@
     }
     try {
       setStatus("🕐 Escaneando ticket…");
-      await window.processTicketWithIA(file);
+      const ret = await window.processTicketWithIA(file);
+      // si nos regresan el texto directamente
+      const rawText = ret?.text || ret?.rawText || ret?.ocrText;
+      if (rawText){
+        const parsed = parseTicketFromText(rawText);
+        applyParsedFields(parsed);
+        setStatus("✅ Datos detectados automáticamente","ok");
+      }
     } catch (e) {
       console.error("[autoProcess] Error al procesar:", e);
       setStatus("Falló el OCR. Intenta de nuevo.", "err");
     }
   }
+
+  // También aceptamos eventos crudos desde ocr.js:
+  // document.dispatchEvent(new CustomEvent('ocr:text', { detail: { text } }))
+  document.addEventListener('ocr:text', (ev)=>{
+    const raw = ev?.detail?.text || ev?.detail;
+    if (!raw) return;
+    const parsed = parseTicketFromText(raw);
+    applyParsedFields(parsed);
+    setStatus("✅ Datos detectados automáticamente","ok");
+  });
 
   // ===== Cámara =====
   async function openCamera() {
@@ -394,7 +547,7 @@
     else { greetEl && (greetEl.textContent=`Registro de ticket — ${user.email}`); btnRegistrar && (btnRegistrar.disabled=false); }
   });
 
-  // recibe productos desde ocr.js
+  // recibe productos desde ocr.js (también los emitimos desde el parser)
   document.addEventListener('ocr:productos', ev=>{
     const det = ev.detail || [];
     productos = [];
