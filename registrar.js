@@ -1,3 +1,4 @@
+// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + espera de OCR listo
 (() => {
   const $ = id => document.getElementById(id);
 
@@ -42,8 +43,8 @@
   const KW = {
     burgers:["burger","hamburguesa","cheeseburger","bacon"],
     costillas:["ribs","costillas"],
-    cortes:["steak","sirloin","ribeye","rib eye","new york","arrachera"],
-    pescado:["salmon","salmón","tilapia","pescado","shrimp","camarones","fish & chips","fish and chips"],
+    cortes:["steak","sirloin","ribeye","rib eye","new york","arrachera","sirloin premier","american sampler"],
+    pescado:["salmon","salmón","tilapia","pescado","shrimp","camarones","fish & chips","fish and chips","chicken alfrdo pasta"],
     pollo:["pollo","chicken","tenders"],
     pastas:["pasta","alfredo","fettuccine","parm","pomodoro","lasagna","lasaña"],
     texmex:["fajita","fajitas","tacos","quesadilla","enchilada","burrito","skillet"],
@@ -51,11 +52,15 @@
     entradas:["entrada","sampler","mozzarella","nachos","chips","dip","onion rings","aros de cebolla"],
     ensaladas:["ensalada","salad"],
     sopas:["sopa","soup"],
-    postres:["postre","dessert","brownie","cheesecake","blondie","helado","nieve","pie","pastel"],
+    postres:["postre","dessert","brownie","cheesecake","blondie","helado","nieve","pie","pastel","pancake","pan frances"],
     cocteles:["margarita","mojito","martini","paloma","piña colada","pina colada","gin tonic","aperol","spritz"],
-    alcohol:["cerveza","beer","vino","mezcal","tequila","whisky","ron","vodka","gin"],
-    bebidas:["refresco","soda","coca","pepsi","sprite","fanta","limonada","agua","jugo","iced tea","malteada","shake","smoothie"],
-    calientes:["cafe","café","latte","espresso","té","te","chocolate"]
+    alcohol:["cerveza","beer","vino","mezcal","tequila","whisky","ron","vodka","gin","morita mezcal","te shake"],
+    bebidas:["refresco","soda","coca cola","pepsi","sprite","fanta","limonada","agua","jugo","iced tea","malteada","shake","smoothie","jugo de naranja","red bull"],
+    calientes:["cafe","café","latte","espresso","té","te","chocolate"],
+    Desayunos: ["Chilaquiles","Huevos rancheros","omelette light","huevo c/ chicharron","bagel de huevo"],
+    Tacos: ["Tacos de sirloin"],
+    Ensalada:["Ensalada col ribs","buffalo salad",""]
+
   };
   const POINT_RANGES = {
     burgers:[7,15], costillas:[7,15], cortes:[7,15], pescado:[6,14], pollo:[6,13], pastas:[6,13], texmex:[6,14],
@@ -414,4 +419,3 @@
     console.error("[promise rejection]", e.reason || e);
   });
 })();
-
