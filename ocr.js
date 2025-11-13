@@ -10,9 +10,9 @@ function dbgDump() {
 
 /* ====== IA ====== */
 // Opción A (directo) — deja vacío si usarás proxy:
-const OPENAI_API_KEY = ""; 
+const OPENAI_API_KEY = ""; // p.ej. "sk-proj-xxxxxxxx", o vacío si usarás proxy
 // Opción B (proxy Firebase Functions Gen2)
-const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; 
+const OPENAI_PROXY_ENDPOINT = window.OPENAI_PROXY_ENDPOINT || ""; // 
 
 /* ====== UI helpers ====== */
 function setIABadge(state, msg) {
@@ -328,7 +328,8 @@ Debes responder SOLO JSON válido con este shape exacto:
   "items": [{"name":"string","qty":number,"price":number}]
 }
 Reglas:
-- No inventes datos. Si no ves algo, devuelve vacío (folio/fecha) o 0/[].
+- No inventes datos. Si no ves algo, devuelve vacío (folio/fecha) o 0/[].`
+    + `
 - "items" solo comida/bebida (excluye IVA/subtotal/propina/pagos).
 - qty >= 1. price = importe de línea; si no se ve, usa 0.
 - Responde SOLO JSON (sin texto extra).
@@ -409,6 +410,9 @@ async function processTicketWithIA(file) {
     const text = await runTesseract(canvas);
     dbgNote("OCR listo, longitud: " + text.length);
 
+    // 🔹 Nuevo: avisar al front del texto crudo para quien lo quiera usar (registrar.js)
+    document.dispatchEvent(new CustomEvent("ocr:text", { detail: { text } }));
+
     let result = null;
     try {
       result = await callOpenAI(text);
@@ -478,7 +482,13 @@ async function processTicketWithIA(file) {
       price: typeof it.price === "number" ? it.price : null
     }));
 
+    // productos para registrar.js
     document.dispatchEvent(new CustomEvent("ocr:productos", { detail: payload }));
+
+    // opcional: también mandamos todo el objeto ya parseado
+    document.dispatchEvent(new CustomEvent("ocr:parsed", {
+      detail: { folio, fecha, total, items: finalItems }
+    }));
 
     if (statusEl) {
       statusEl.className = "validacion-msg ok";
@@ -486,14 +496,19 @@ async function processTicketWithIA(file) {
     }
 
     dbgDump();
+
+    // 🔹 IMPORTANTE para registrar.js: regresamos info estructurada
+    return { text, folio, fecha, total, items: finalItems };
   } catch (e) {
     console.error(e);
-    const statusEl = document.getElementById("ocrStatus");
-    if (statusEl) {
-      statusEl.className = "validacion-msg err";
-      statusEl.textContent = "❌ No pude leer el ticket. Intenta con mejor luz o que salga completo.";
+    const statusEl2 = document.getElementById("ocrStatus");
+    if (statusEl2) {
+      statusEl2.className = "validacion-msg err";
+      statusEl2.textContent = "❌ No pude leer el ticket. Intenta con mejor luz o que salga completo.";
     }
     alert("No se pudo leer el ticket. Vuelve a tomar la foto más cerca, recto y con buena luz.");
+    // para que registrar.js no truene:
+    return { text: "", folio: "", fecha: "", total: null, items: [] };
   }
 }
 
@@ -511,3 +526,5 @@ async function processTicketWithIA(file) {
   });
 })();
 
+// 🔹 Muy importante: exponer la función globalmente para registrar.js
+window.processTicketWithIA = processTicketWithIA;
