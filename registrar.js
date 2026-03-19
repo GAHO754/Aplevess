@@ -1,10 +1,49 @@
-// registrar.js — RTDB + Cámara + OCR AUTO (sin botón) + parser preciso
+// registrar.js — RTDB + Cámara + OCR AUTO + Bloqueo total + Mesero + resumen claro (Saldo)
 (() => {
+  console.log("[registrar.js] cargado");
+
   const $ = id => document.getElementById(id);
 
   // ===== Firebase =====
   const auth = firebase.auth();
   const db   = firebase.database();
+
+  // ================= LIVE EVENTS (MÓDULO 1) =================
+  async function pushLiveEvent(payload){
+    try{
+      const user = auth.currentUser;
+      console.log("USER ACTUAL:", user);
+
+      const eventRef = db.ref("liveEvents").push();
+      const eventId = eventRef.key;
+
+      const now = Date.now();
+      const d = new Date(now);
+      const ymd = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+
+      const base = {
+        createdAt: now,
+        uid: user?.uid || "",
+        userEmail: user?.email || "",
+        meta: {
+          source: "registrar",
+          page: location.pathname || "",
+          ua: navigator.userAgent || ""
+        }
+      };
+
+      await eventRef.set({ ...base, ...payload });
+
+      // índice por día (consulta/limpieza rápida)
+      await db.ref(`liveEventsByDay/${ymd}/${eventId}`).set(true);
+
+      return eventId;
+    }catch(e){
+      console.warn("pushLiveEvent error:", e);
+      return "";
+    }
+  }
+  // ===========================================================
 
   // ===== UI =====
   const fileInput    = $('ticketFile');
@@ -17,87 +56,92 @@
   const btnShot      = $('btnCapturar');
   const ocrStatus    = $('ocrStatus');
 
-  const iNum   = $('inputTicketNumero');   // folio (5 dígitos)
-  const iFecha = $('inputTicketFecha');    // <input type="date">
-  const iTotal = $('inputTicketTotal');
+  const iNum    = $('inputTicketNumero');
+  const iFecha  = $('inputTicketFecha');
+  const iMesero = $('inputTicketMesero');
+  const iTotal  = $('inputTicketTotal');
 
-  const listaProd    = $('listaProductos');
   const btnRegistrar = $('btnRegistrarTicket');
   const msgTicket    = $('ticketValidacion');
   const greetEl      = $('userGreeting');
 
-  const tablaPuntosBody = ($('tablaPuntos')||{}).querySelector?.('tbody');
-  const totalPuntosEl   = $('totalPuntos');
+  const elDisp   = $('ptsDisponibles');
+  const elResv   = $('ptsReservados');
+  const elTot    = $('ptsTotales');
+  const tbody    = $('tbodyTickets');
+  const toast    = $('awardToast');
 
-  // ===== Políticas =====
-  const VENCE_DIAS = 180;
-  const DAY_LIMIT  = 2;
+  // Botón Regresar
+  const btnBack  = $('btnLogout');
 
-  // ===== Estado =====
-  let isLogged = false;
+  // ===== Parámetros de negocio =====
+  const VENCE_DIAS   = 180;  // vencimiento de monedero por ticket (para mostrar “Vence”)
+  const DAY_LIMIT    = 2;    // máximo tickets por día (por createdAt)
+  const REGISTER_DAYS_LIMIT = 3; // ✅ SOLO 3 días para registrar a partir de la fecha del ticket
+  const PERCENT_BACK = 0.05; // ✅ 5% monedero
+
   let liveStream = null;
   let currentPreviewURL = null;
-  let productos = []; // [{ name, qty, price, pointsUnit }]
+  let unsub = [];
 
-  // ===== Puntos por categoría =====
-  const KW = {
-    burgers:["burger","hamburguesa","cheeseburger","bacon"],
-    costillas:["ribs","costillas"],
-    cortes:["steak","sirloin","ribeye","rib eye","new york","arrachera","sirloin premier","american sampler"],
-    pescado:["salmon","salmón","tilapia","pescado","shrimp","camarones","fish & chips","fish and chips","chicken alfrdo pasta"],
-    pollo:["pollo","chicken","tenders"],
-    pastas:["pasta","alfredo","fettuccine","parm","pomodoro","lasagna","lasaña"],
-    texmex:["fajita","fajitas","tacos","quesadilla","enchilada","burrito","skillet"],
-    alitas:["alitas","wings","boneless"],
-    entradas:["entrada","sampler","mozzarella","nachos","chips","dip","onion rings","aros de cebolla"],
-    ensaladas:["ensalada","salad"],
-    sopas:["sopa","soup"],
-    postres:["postre","dessert","brownie","cheesecake","blondie","helado","nieve","pie","pastel","pancake","pan frances"],
-    cocteles:["margarita","mojito","martini","paloma","piña colada","pina colada","gin tonic","aperol","spritz"],
-    alcohol:["cerveza","beer","vino","mezcal","tequila","whisky","ron","vodka","gin","morita mezcal","te shake"],
-    bebidas:["refresco","soda","coca cola","pepsi","sprite","fanta","limonada","agua","jugo","iced tea","malteada","shake","smoothie","jugo de naranja","red bull"],
-    calientes:["cafe","café","latte","espresso","té","te","chocolate"],
-    Desayunos: ["Chilaquiles","Huevos rancheros","omelette light","huevo c/ chicharron","bagel de huevo"],
-    Tacos: ["Tacos de sirloin"],
-    Ensalada:["Ensalada col ribs","buffalo salad",""]
+  // Estado para el resumen (internamente sigue llamándose pts)
+  const ptsState = {
+    totalEarned: 0,
+    reserved:    0,
+    redeemed:    0
   };
-  const POINT_RANGES = {
-    burgers:[7,15], costillas:[7,15], cortes:[7,15], pescado:[6,14], pollo:[6,13], pastas:[6,13], texmex:[6,14],
-    alitas:[4,10], entradas:[3,9], ensaladas:[3,9], sopas:[3,8], postres:[4,10], cocteles:[4,10],
-    alcohol:[3,9], bebidas:[2,7], calientes:[2,6], other:[1,5]
-  };
-  const hashInt = (s)=>{ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; };
-  const seededRandInt = (seed,min,max)=>{ const r=(hashInt(String(seed))%10000)/10000; return Math.floor(min + r*(max-min+1)); };
-  function detectCategory(name){
-    const n = String(name||'').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
-    for (const k of ["burgers","costillas","cortes","pescado","pollo","pastas","texmex","alitas","entradas","ensaladas","sopas","postres","cocteles","alcohol","bebidas","calientes"]) {
-      if (KW[k].some(w=>n.includes(w))) return k;
-    }
-    return "other";
-  }
-  function assignPointsForProduct(name, price){
-    let cat = detectCategory(name);
-    let [minP,maxP] = POINT_RANGES[cat] || POINT_RANGES.other;
-    if (cat==="other" && typeof price==="number"){
-      if (price>=600) [minP,maxP]=[12,15];
-      else if (price>=250) [minP,maxP]=[8,12];
-      else if (price>=120) [minP,maxP]=[5,9];
-      else [minP,maxP]=[1,5];
-    }
-    const seed = `${name}|${Math.round(price||0)}`;
-    return seededRandInt(seed,minP,maxP);
+
+  function round2(n){
+    const v = Number(n || 0);
+    return Math.round((v + Number.EPSILON) * 100) / 100;
   }
 
-  // ===== Helpers =====
+  function fmtMoney(n){
+    const v = Number(n||0);
+    return `$${v.toFixed(2)}`;
+  }
+
+  /* ===== Helpers UI ===== */
   function setStatus(msg, type='') {
     if (!ocrStatus) return;
     ocrStatus.className = 'validacion-msg';
-    if (type) ocrStatus.classList.add(type); // ok | err
+    if (type) ocrStatus.classList.add(type);
     ocrStatus.textContent = msg || '';
   }
-  function disableAllEdits() {
-    [iNum,iFecha,iTotal].forEach(x=>{ if(x){ x.readOnly = true; x.disabled = true; }});
+
+  // ✅ Bloqueo REAL: readonly + disabled + blur + bloquea focus
+  function lockInputs(){
+    // ✅ SOLO bloqueamos folio/fecha/total (mesero NO)
+    [iNum, iFecha, iTotal].forEach(x => {
+      if(!x) return;
+      x.readOnly = true;
+      x.disabled = true;
+      x.setAttribute("tabindex","-1");
+      x.style.pointerEvents = "none";
+      x.blur?.();
+    });
+
+    // ✅ Mesero manual: queda editable
+    if (iMesero){
+      iMesero.disabled = false;
+      iMesero.readOnly = false;
+      iMesero.style.pointerEvents = "auto";
+      iMesero.removeAttribute("tabindex");
+    }
   }
+
+  function unlockInputs(){
+    // (si un día quieres edición manual, aquí la reactivas)
+    [iNum,iFecha,iMesero,iTotal].forEach(x=>{
+      if(!x) return;
+      x.disabled = false;
+      x.readOnly = true; // 👈 lo mantenemos readonly SIEMPRE (no teclado) (tu lógica original)
+      x.setAttribute("tabindex","-1");
+      x.style.pointerEvents = "none";
+      x.blur?.();
+    });
+  }
+
   function setPreview(file) {
     if (currentPreviewURL) URL.revokeObjectURL(currentPreviewURL);
     const url = URL.createObjectURL(file);
@@ -111,6 +155,7 @@
       dropzone.appendChild(img);
     }
   }
+
   function dataURLtoBlob(dataURL) {
     const [meta, b64] = dataURL.split(',');
     const mime = meta.split(':')[1].split(';')[0];
@@ -120,6 +165,7 @@
     for (let i=0;i<bin.length;i++) ia[i] = bin.charCodeAt(i);
     return new Blob([ab], { type: mime });
   }
+
   function setFileInputFromBlob(blob, name='ticket.jpg') {
     const file = new File([blob], name, { type: blob.type||'image/jpeg', lastModified: Date.now() });
     const dt = new DataTransfer();
@@ -129,178 +175,21 @@
     return file;
   }
 
-  // =========================
-  //  Limpieza y correcciones OCR
-  // =========================
-  function cleanOCR(raw) {
-    let t = String(raw||'')
-      .replace(/\u00A0/g,' ')           // NBSP
-      .replace(/[|·•]+/g,' ')
-      .replace(/[^\S\r\n]{2,}/g,' ')    // espacios repetidos
-      .replace(/[=]{2,}/g,'=')
-      .replace(/[^\x09\x0A\x0D\x20-\x7EÁÉÍÓÚÑáéíóúñ]/g,'') // caracteres raros
-      .replace(/\r/g,'')
-      .trim();
-
-    // Normaliza confusiones comunes de OCR en contexto mixto
-    t = t
-      .replace(/\bI(\d{4})\b/g,'1$1')
-      .replace(/\b(\d{2})O(\d{2})\b/g,'$1 0 $2')
-      .replace(/(\d)[S](\d)/g,'$15$2')
-      .replace(/(\d)[B](\d)/g,'$18$2')
-      .replace(/(\d)Z(\d)/g,'$12$2');
-
-    return t;
+  // ✅ NUEVO: Monedero = 5% del total pagado
+  function computeMonederoFromTotal(total){
+    if (!Number.isFinite(total) || total <= 0) return 0;
+    return round2(total * PERCENT_BACK);
   }
 
-  // Correcciones de nombres de productos
-  const PRODUCT_FIX = [
-    [/pa\s*Gado/i, 'Papa Gajo'],
-    [/Chllaquiles|Chilaqulles|Chllaqulles/i, 'Chilaquiles'],
-    [/Huevo[s]?\s*a[l]?\s*Gusto/i, 'Huevos al Gusto'],
-    [/Desayuno?s?\s*2x1?/i, 'Desayunos 2x1'],
-    [/Mole\s*C\/?\s*Huevo/i, 'Mole c/ Huevo'],
-  ];
+  function updatePointsSummary() {
+    const available = Math.max(0, ptsState.totalEarned - ptsState.reserved - ptsState.redeemed);
 
-  function fixProductName(name) {
-    let s = String(name||'').trim();
-    PRODUCT_FIX.forEach(([re, rep]) => { s = s.replace(re, rep); });
-    // quita basura residual tipo “TT”, “Ea”, signos
-    s = s.replace(/\bTT\b|\bEa\b/gi, '')
-         .replace(/\s{2,}/g,' ')
-         .replace(/[=·•]+$/,'')
-         .trim();
-    return s;
+    if (elDisp) elDisp.textContent = fmtMoney(available);
+    if (elResv) elResv.textContent = fmtMoney(ptsState.reserved);
+    if (elTot)  elTot.textContent  = fmtMoney(ptsState.totalEarned);
   }
 
-  // =========================
-  //  PARSER PRECISO DE TICKET
-  // =========================
-  function parseTicketFromText(raw){
-    const rxMoney = /(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/;
-    const rxDate  = /\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b/; // dd/mm/aaaa
-    const rxHour  = /\b\d{1,2}:\d{2}\s?(?:AM|PM)?\b/i;
-
-    const text = cleanOCR(raw);
-    const lines = text.split('\n').map(s=>s.trim()).filter(Boolean);
-
-    // --- FECHA: primera dd/mm/aaaa ---
-    let fechaISO = '';
-    for (const l of lines){
-      const m = l.match(rxDate);
-      if (m){
-        let [_, d, mo, y] = m;
-        if (y.length===2) y = (+y < 50 ? '20'+y : '19'+y);
-        const dd = String(d).padStart(2,'0');
-        const mm = String(mo).padStart(2,'0');
-        fechaISO = `${y}-${mm}-${dd}`;
-        break;
-      }
-    }
-
-    // --- FOLIO: 5 dígitos cerca de la hora ---
-    let folio = '';
-    let hourIndex = lines.findIndex(l => rxHour.test(l));
-    if (hourIndex === -1) hourIndex = 0;
-    const windowStart = Math.max(0, hourIndex-2);
-    const windowEnd   = Math.min(lines.length-1, hourIndex+4);
-    for (let i=windowStart; i<=windowEnd; i++){
-      const m = lines[i].match(/\b(\d{5})\b/);
-      if (m){ folio = m[1]; break; }
-    }
-    if (!folio){
-      const m = text.match(/\b(\d{5})\b/);
-      if (m) folio = m[1];
-    }
-
-    // --- TOTAL: prioriza "Total" o "Impt.Total" ---
-    let total = null;
-    for (let i=0;i<lines.length;i++){
-      if (/^total\b/i.test(lines[i]) || /impt\.?total/i.test(lines[i])){
-        const m = lines[i].match(rxMoney) || (lines[i+1]?.match(rxMoney));
-        if (m){ total = parseFloat(m[1].replace(/\./g,'').replace(',','.')); break; }
-      }
-    }
-    if (total==null){
-      // fallback: "Efectivo" o último importe del ticket
-      for (let i=lines.length-1; i>=0; i--){
-        if (/efectivo/i.test(lines[i]) && rxMoney.test(lines[i])){
-          total = parseFloat(lines[i].match(rxMoney)[1].replace(/\./g,'').replace(',','.')); break;
-        }
-      }
-      if (total==null){
-        const all = [...text.matchAll(rxMoney)].map(m=>m[1]);
-        if (all.length){ total = parseFloat(all[all.length-1].replace(/\./g,'').replace(',','.')); }
-      }
-    }
-
-    // --- PRODUCTOS: entre items y "Sub-total" ---
-    const proms = /(2x1|promo|promocion|desayunos? ?2x1)/i;
-    const stopIdx = lines.findIndex(l => /sub[\s-]?total/i.test(l));
-    let firstItemIdx = -1;
-    for (let i=0;i<lines.length;i++){
-      if (!/(mesero|mesa|clientes?|reimpresion|fecha|hora|total|iva|impuesto|cuenta|efectivo|cambio|cp|regimen)/i.test(lines[i])){
-        if (rxMoney.test(lines[i]) || (lines[i+1] && rxMoney.test(lines[i+1]))){
-          firstItemIdx = i; break;
-        }
-      }
-    }
-
-    const products = [];
-    if (firstItemIdx>=0){
-      const end = stopIdx>firstItemIdx ? stopIdx : Math.min(lines.length, firstItemIdx+20);
-      for (let i=firstItemIdx; i<end; i++){
-        let name = lines[i];
-        if (!name || proms.test(name)) continue;
-
-        // mismo renglón: "Nombre .... 229.00"
-        let m = name.match(rxMoney);
-        if (m){
-          const price = parseFloat(m[1].replace(/\./g,'').replace(',','.'));
-          name = name.replace(rxMoney,'').replace(/[.\-]+$/,'').trim();
-          name = fixProductName(name);
-          if (name && !proms.test(name)) products.push({ name, qty:1, price });
-          continue;
-        }
-
-        // siguiente renglón tiene el precio
-        if (i+1 < end && rxMoney.test(lines[i+1]) && !proms.test(lines[i+1])){
-          const price = parseFloat(lines[i+1].match(rxMoney)[1].replace(/\./g,'').replace(',','.'));
-          name = fixProductName(name.replace(/[.\-]+$/,'').trim());
-          if (name) products.push({ name, qty:1, price });
-          i++;
-          continue;
-        }
-
-        // sin precio, igual lo tomamos
-        name = fixProductName(name);
-        if (name && !proms.test(name)) products.push({ name, qty:1 });
-      }
-    }
-
-    return { folio, fechaISO, total, productos: products };
-  }
-
-  function applyParsedFields(parsed){
-    if (!parsed) return;
-
-    if (parsed.folio && /^\d{5}$/.test(parsed.folio) && iNum){
-      iNum.value = parsed.folio;
-    }
-    if (parsed.fechaISO && /^\d{4}-\d{2}-\d{2}$/.test(parsed.fechaISO) && iFecha){
-      iFecha.value = parsed.fechaISO;
-    }
-    if (typeof parsed.total === 'number' && !Number.isNaN(parsed.total) && iTotal){
-      iTotal.value = parsed.total.toFixed(2);
-    }
-
-    if (Array.isArray(parsed.productos)){
-      const evt = new CustomEvent('ocr:productos', { detail: parsed.productos });
-      document.dispatchEvent(evt);
-    }
-  }
-
-  // ==== Puente con ocr.js ====
+  /* ===== Puente con ocr.js ===== */
   async function waitForOCR(tries = 30, delayMs = 100) {
     for (let i = 0; i < tries; i++) {
       if (typeof window.processTicketWithIA === "function") return true;
@@ -309,50 +198,123 @@
     return false;
   }
 
+  function sanitizeMesero(m){
+    const s = String(m||"").trim();
+    if(!s) return "";
+    // solo letras/espacios y MAYÚSCULAS
+    return s.replace(/[^A-ZÁÉÍÓÚÑ\s]/gi,"").replace(/\s+/g," ").trim().toUpperCase();
+  }
+
   async function autoProcessCurrentFile() {
     const file = fileInput?.files?.[0];
     if (!file) {
       setStatus("Sube o toma la foto del ticket primero.", "err");
       return;
     }
+
     const ready = await waitForOCR();
     if (!ready) {
       console.warn("[autoProcess] OCR no listo (processTicketWithIA no encontrada)");
       setStatus("No se pudo iniciar el OCR. Revisa la consola.", "err");
       return;
     }
+
     try {
       setStatus("🕐 Escaneando ticket…");
+      lockInputs();
+      btnRegistrar && (btnRegistrar.disabled = true);
+
       const ret = await window.processTicketWithIA(file);
-      const rawText = ret?.text || ret?.rawText || ret?.ocrText;
-      if (rawText){
-        const parsed = parseTicketFromText(rawText);
-        applyParsedFields(parsed);
-        setStatus("✅ Datos detectados automáticamente","ok");
+      console.log("🧾 OCR RESULT:", ret);
+
+      const folio  = (ret?.folio || ret?.numero || "").toString().trim();
+      const fecha  = (ret?.fecha || ret?.date || "").toString().trim();
+      const total  = Number(ret?.total || ret?.amount || 0);
+      const mesero = sanitizeMesero(iMesero?.value);
+
+      // ✅ Asignar valores
+      if (iNum) {
+        iNum.value = folio || "NO DETECTADO";
+      }
+
+      if (iFecha) {
+        iFecha.value = fecha || "NO DETECTADA";
+      }
+
+      if (iMesero) {
+        iMesero.value = mesero || "";
+      }
+
+      if (iTotal) {
+        iTotal.value = (Number.isFinite(total) && total > 0)
+          ? total.toFixed(2)
+          : "0.00";
+      }
+
+
+      // ✅ Validación FUERTE (si falta total real, NO permitir registrar)
+      const okFolio = /^\d{5,7}$/.test(folio);
+      const okFecha = /^\d{4}-\d{2}-\d{2}$/.test(fecha);
+      const okTotal = Number.isFinite(total) && total > 0;
+
+      if (!okTotal) {
+        setStatus("❌ No pude detectar el TOTAL (línea 'Total 123.45'). Toma otra foto más clara del área de TOTAL.", "err");
+        msgTicket.className='validacion-msg err';
+        msgTicket.textContent="No se puede registrar sin TOTAL válido.";
+        lockInputs();
+        return;
+      }
+
+      // Mesero es opcional (si no se lee, no bloquea)
+      const meseroTxt = mesero ? ` · Mesero: ${mesero}` : "";
+      setStatus(`✓ Ticket leído. Folio: ${folio||"(sin)"} · Fecha: ${fecha||"(sin)"} · Total: $${total.toFixed(2)}${meseroTxt}`, "ok");
+      setStatus("DEBUG OCR: " + JSON.stringify(ret), "ok");
+
+
+      // ✅ LIVE EVENT: scan OK
+      try{
+        await pushLiveEvent({
+          type: "ticket_scan",
+          brand: "Applebees",
+          storeId: "APB_PASEO", // cámbialo si luego quieres por sucursal real
+          storeName: "Applebee’s Paseo Central",
+          status: "ok",
+          ticket: {
+            folio,
+            fecha,
+            total: Number(total.toFixed(2)),
+            mesero: (iMesero?.value || "").trim().toUpperCase()
+          }
+        });
+      }catch{}
+
+      // ✅ Mantener bloqueado siempre (sin teclado)
+      lockInputs();
+
+      if (okFolio && okFecha && okTotal) {
+        btnRegistrar && (btnRegistrar.disabled = false);
+      } else {
+        btnRegistrar && (btnRegistrar.disabled = true);
       }
     } catch (e) {
       console.error("[autoProcess] Error al procesar:", e);
       setStatus("Falló el OCR. Intenta de nuevo.", "err");
+      btnRegistrar && (btnRegistrar.disabled = true);
+      lockInputs();
     }
   }
 
-  // También aceptamos eventos crudos desde ocr.js:
-  // document.dispatchEvent(new CustomEvent('ocr:text', { detail: { text } }))
-  document.addEventListener('ocr:text', (ev)=>{
-    const raw = ev?.detail?.text || ev?.detail;
-    if (!raw) return;
-    const parsed = parseTicketFromText(raw);
-    applyParsedFields(parsed);
-    setStatus("✅ Datos detectados automáticamente","ok");
-  });
-
   // ===== Cámara =====
   async function openCamera() {
+    console.log("[registrar.js] openCamera click");
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         setStatus("Tu navegador no soporta cámara. Usa Adjuntar foto.", "err"); return;
       }
-      video.muted = true; video.setAttribute('playsinline','true');
+      video.muted = true;
+      video.setAttribute('playsinline','true');
+      video.setAttribute('muted','true');
+
       const tries = [
         { video:{ facingMode:{exact:"environment"}, width:{ideal:1920}, height:{ideal:1080} }, audio:false },
         { video:{ facingMode:{ideal:"environment"},  width:{ideal:1920}, height:{ideal:1080} }, audio:false },
@@ -364,20 +326,24 @@
 
       liveStream=stream; video.srcObject=stream;
       modal.style.display='flex'; modal.setAttribute('aria-hidden','false');
-      await video.play(); setStatus('');
+      await video.play().catch(()=>{});
+      setStatus('');
     } catch(e){
       console.error("getUserMedia:",e);
       let msg="No se pudo acceder a la cámara. Revisa permisos del navegador.";
       if ((!window.isSecureContext && location.hostname!=='localhost') || (location.protocol!=='https:' && location.hostname!=='localhost')){
         msg+=" (En móviles abre el sitio con HTTPS).";
       }
-      setStatus(msg,"err"); fileInput?.click();
+      setStatus(msg,"err");
+      fileInput?.click();
     }
   }
+
   function stopCamera(){
     if (liveStream){ liveStream.getTracks().forEach(t=>t.stop()); liveStream=null; }
     modal.style.display='none'; modal.setAttribute('aria-hidden','true');
   }
+
   async function captureFrame(){
     const w=video.videoWidth, h=video.videoHeight;
     if (!w||!h){ setStatus("Cámara aún no lista. Intenta de nuevo.","err"); return; }
@@ -390,24 +356,24 @@
     const blob=dataURLtoBlob(dataURL);
     setFileInputFromBlob(blob,`ticket_${Date.now()}.jpg`);
     setStatus("📎 Foto capturada. Procesando OCR…","ok");
-    await autoProcessCurrentFile(); // AUTO
+    await autoProcessCurrentFile();
   }
+
   btnCam?.addEventListener('click', openCamera);
   btnClose?.addEventListener('click', stopCamera);
   btnShot?.addEventListener('click', captureFrame);
 
-  // ===== Subir archivo (AUTO) =====
+  // ===== Subir archivo =====
   btnPickFile?.addEventListener('click', ()=> fileInput?.click());
   fileInput?.addEventListener('change', async e=>{
-    const f=e.target.files&&e.target.files[0];
+    const f=e.target.files && e.target.files[0];
     if (f){
       setPreview(f);
       setStatus("📎 Imagen cargada. Procesando OCR…","ok");
-      await autoProcessCurrentFile(); // AUTO
+      await autoProcessCurrentFile();
     }
   });
 
-  // ===== Drag & Drop (AUTO) =====
   if (dropzone) {
     dropzone.addEventListener('click', ()=> fileInput?.click());
     dropzone.addEventListener('dragover', e => {
@@ -422,92 +388,151 @@
         fileInput.files = dt.files;
         setPreview(e.dataTransfer.files[0]);
         setStatus("📎 Imagen cargada. Procesando OCR…","ok");
-        await autoProcessCurrentFile(); // AUTO
+        await autoProcessCurrentFile();
       }
     });
   }
 
-  // ===== Productos (solo lectura) =====
-  function upsertProducto(nombre, cantidad=1, price=null){
-    nombre=String(nombre||'').trim(); if(!nombre) return;
-    const pointsUnit = assignPointsForProduct(nombre, typeof price==='number'?price:null);
-    const idx = productos.findIndex(p=>p.name.toLowerCase()===nombre.toLowerCase());
-    if (idx>=0){
-      productos[idx].qty += cantidad;
-      if (typeof price==='number'){ productos[idx].price = +((productos[idx].price||0)+price).toFixed(2); }
-    } else {
-      productos.push({ name:nombre, qty:cantidad, price: price??null, pointsUnit });
-    }
-    renderProductos();
-  }
-  function renderProductos(){
-    if (!listaProd) return;
-    listaProd.innerHTML='';
-    productos.forEach(p=>{
-      const chip=document.createElement('div');
-      chip.className='chip readonly';
-      chip.innerHTML=`<span>${p.name}</span><span class="qty"><strong>${p.qty}</strong></span><span class="pts">${p.pointsUnit} pts/u</span>`;
-      listaProd.appendChild(chip);
-    });
-    updatePuntosResumen();
-  }
-  function updatePuntosResumen(){
-    if (!tablaPuntosBody) return;
-    tablaPuntosBody.innerHTML='';
-    let total=0;
-    productos.forEach(p=>{
-      const sub=p.pointsUnit*p.qty; total+=sub;
-      const tr=document.createElement('tr');
-      tr.innerHTML=`<td>${p.name}</td><td>${p.qty}</td><td>${p.pointsUnit}</td><td>${sub}</td>`;
-      tablaPuntosBody.appendChild(tr);
-    });
-    if (totalPuntosEl) totalPuntosEl.textContent=String(total);
-  }
-  function getPuntosDetalle(){
-    let total=0;
-    const detalle=productos.map(p=>{
-      const sub=p.pointsUnit*p.qty; total+=sub;
-      return { producto:p.name, cantidad:p.qty, puntos_unitarios:p.pointsUnit, puntos_subtotal:sub };
-    });
-    return { total, detalle };
+  function fmtDate(ms){
+    if(!ms) return '';
+    try{
+      return new Date(ms).toLocaleDateString('es-MX',{year:'numeric',month:'2-digit',day:'2-digit'});
+    }catch{ return '' }
   }
 
-  // ===== Guardar =====
-  function addMonths(date, months){ const d=new Date(date.getTime()); d.setMonth(d.getMonth()+months); return d; }
-  function startEndOfToday(){ const s=new Date(); s.setHours(0,0,0,0); const e=new Date(); e.setHours(23,59,59,999); return {start:s.getTime(), end:e.getTime()}; }
-  function ymdFromISO(iso){ return String(iso||'').replace(/-/g,''); }
+  function renderTickets(list){
+    if (!tbody) return;
+    if (!list.length){
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">No hay tickets aún.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = list.map(t=>`
+      <tr>
+        <td>${t.fecha || ''}</td>
+        <td>${t.folio || ''}</td>
+        <td>$${(t.total||0).toFixed(2)}</td>
+        <td><b>${fmtMoney(t.puntos||0)}</b></td>
+        <td>${fmtDate(t.vence)||''}</td>
+      </tr>
+    `).join('');
+  }
+
+  function attachUserStreams(uid){
+    if (!uid) return;
+    unsub.forEach(fn=>{ try{fn();}catch{} });
+    unsub = [];
+
+    const tRef = db.ref(`users/${uid}/tickets`);
+    tRef.on('value', snap=>{
+      const val = snap.val()||{};
+      const arr = Object.values(val).map(v=>({
+        folio: v.folio,
+        fecha: v.fecha,
+        total: Number(v.total||0),
+        puntos: Number(v.points||v.puntosTotal||0),
+        vence: Number(v.vencePuntos||0),
+        createdAt: Number(v.createdAt||0)
+      }));
+      arr.sort((a,b)=> (b.createdAt||0)-(a.createdAt||0));
+      renderTickets(arr.slice(0,12));
+      ptsState.totalEarned = arr.reduce((a,x)=> a + (Number(x.puntos)||0), 0);
+      updatePointsSummary();
+    });
+    unsub.push(()=> tRef.off());
+
+    const rRef = db.ref(`users/${uid}/redemptions`);
+    rRef.on('value', snap=>{
+      const reds = snap.val()||{};
+      let reserved = 0;
+      let redeemed = 0;
+      const now = Date.now();
+
+      Object.values(reds).forEach(r=>{
+        const cost = Number(r.cost||0);
+        const st   = String(r.status||'').toLowerCase();
+        const expOk = !r.expiresAt || Number(r.expiresAt)>now;
+
+        if (st === 'pendiente' && expOk) reserved += cost;
+        else if (st === 'canjeado' || st === 'consumido' || st === 'usado') redeemed += cost;
+      });
+
+      ptsState.reserved = reserved;
+      ptsState.redeemed = redeemed;
+      updatePointsSummary();
+    });
+    unsub.push(()=> rRef.off());
+  }
+
+  function addDays(date, days){
+    const d = new Date(date.getTime());
+    d.setDate(d.getDate() + days);
+    return d;
+  }
+
+  function addMonths(date, months){
+    const d=new Date(date.getTime());
+    d.setMonth(d.getMonth()+months);
+    return d;
+  }
+
+  function startEndOfToday(){
+    const s=new Date(); s.setHours(0,0,0,0);
+    const e=new Date(); e.setHours(23,59,59,999);
+    return {start:s.getTime(), end:e.getTime()};
+  }
+
+  function ymdFromISO(iso){
+    return String(iso||'').replace(/-/g,'');
+  }
+
+  function buildTicketKeys(fechaStr, folio, totalNum){
+    const ymd = ymdFromISO(fechaStr);
+    const totalCents = Math.round(totalNum * 100);
+    const indexKey = `${folio}_${totalCents}`;
+    const ticketId = `${ymd}_${folio}`;
+    return { ymd, totalCents, indexKey, ticketId };
+  }
+
+  // ✅ Regla: ticket solo se registra dentro de 3 días desde la fecha del ticket
+  function isTicketExpiredByDate(fechaStr){
+    // fechaStr: YYYY-MM-DD
+    const ticketDate = new Date(`${fechaStr}T00:00:00`);
+    if (Number.isNaN(ticketDate.getTime())) return false;
+
+    // Expira al final del día (fecha + 3 días)
+    const exp = addDays(ticketDate, REGISTER_DAYS_LIMIT);
+    exp.setHours(23,59,59,999);
+
+    return Date.now() > exp.getTime();
+  }
 
   async function registrarTicketRTDB(){
-    const user=auth.currentUser;
-    if (!user){ msgTicket.className='validacion-msg err'; msgTicket.textContent="Debes iniciar sesión para registrar."; return; }
+      const user = auth.currentUser;
 
-    const folio=(iNum.value||'').trim().toUpperCase();
-    const fechaStr=iFecha.value;
-    const totalNum=parseFloat(iTotal.value||"0")||0;
-
-    if (!/^\d{5}$/.test(folio) || !fechaStr || !totalNum){
+    if (!user || !user.uid){
       msgTicket.className='validacion-msg err';
-      msgTicket.textContent="Faltan datos válidos: folio (5 dígitos), fecha y total."; return;
+      msgTicket.textContent="Sesión no lista. Intenta de nuevo.";
+      return;
     }
 
-    // Puntos desde productos (o fallback por total)
-    let { total: puntosTotal, detalle } = getPuntosDetalle();
-    if (puntosTotal <= 0){
-      let pts;
-      if (totalNum >= 600) pts = 14;
-      else if (totalNum >= 400) pts = 12;
-      else if (totalNum >= 250) pts = 10;
-      else if (totalNum >= 120) pts = 7;
-      else pts = 4;
+    const folio=(iNum?.value||'').trim().toUpperCase();
+    const fechaStr=(iFecha?.value||'').trim();
+    const totalNum=parseFloat(iTotal?.value||"0")||0;
+    const mesero=(iMesero?.value||'').trim().toUpperCase();
 
-      productos = [{ name:"Consumo Applebee's", qty:1, price: totalNum, pointsUnit: pts }];
-      detalle   = [{ producto:"Consumo Applebee's", cantidad:1, puntos_unitarios:pts, puntos_subtotal:pts }];
-
-      puntosTotal = pts;
-      renderProductos();
+    // ✅ Bloqueo fuerte: NO registrar si no hay TOTAL válido real
+    if (!/^\d{5,7}$/.test(folio) || !/^\d{4}-\d{2}-\d{2}$/.test(fechaStr) || !(totalNum>0)){
+      msgTicket.className='validacion-msg err';
+      msgTicket.textContent="Faltan datos válidos (folio/fecha/total). Toma otra foto clara del TOTAL.";
+      return;
     }
 
-    const puntosEnteros = Math.round(puntosTotal);
+    // ✅ Nuevo: validar vencimiento de registro (3 días)
+    if (isTicketExpiredByDate(fechaStr)){
+      msgTicket.className='validacion-msg err';
+      msgTicket.textContent=`⛔ Ticket vencido. Solo puedes registrar tu consumo dentro de ${REGISTER_DAYS_LIMIT} días a partir de la fecha del ticket.`;
+      return;
+    }
 
     // Límite por día
     if (DAY_LIMIT>0){
@@ -517,56 +542,137 @@
         const snap=await qs.once('value');
         const countToday=snap.exists()?Object.keys(snap.val()).length:0;
         if (countToday>=DAY_LIMIT){
-          msgTicket.className='validacion-msg err'; msgTicket.textContent=`⚠️ Ya registraste ${DAY_LIMIT} tickets hoy.`; return;
+          msgTicket.className='validacion-msg err';
+          msgTicket.textContent=`⚠️ Ya registraste ${DAY_LIMIT} tickets hoy.`;
+
+          // ✅ LIVE EVENT: bloqueado por límite diario
+          try{
+            await pushLiveEvent({
+              type: "ticket_blocked",
+              brand: "Applebees",
+              storeId: "APB_PASEO",
+              storeName: "Applebee’s Paseo Central",
+              status: "warn",
+              reason: "day_limit_exceeded",
+              ticket: { folio, fecha: fechaStr, total: totalNum, mesero }
+            });
+          }catch{}
+
+          return;
         }
       }catch(err){ console.warn('No pude verificar límite diario:',err); }
     }
 
-    const fecha=new Date(`${fechaStr}T00:00:00`);
-    const vencePuntos=addMonths(fecha, VENCE_DIAS/30);
-    const userRef   = db.ref(`users/${user.uid}`);
-    const ticketRef = userRef.child(`tickets/${folio}`);
-    const pointsRef = userRef.child('points');
+    const { ymd, totalCents, indexKey, ticketId } = buildTicketKeys(fechaStr, folio, totalNum);
 
-    const ymd = ymdFromISO(fechaStr);
-    const indexRef = db.ref(`ticketsIndex/${ymd}/${folio}`);
+    // ✅ Nuevo: monedero 5%
+    const monedero = computeMonederoFromTotal(totalNum); // decimal
+
+    const fecha=new Date(`${fechaStr}T00:00:00`);
+    const vencePuntos=addMonths(fecha, Math.round(VENCE_DIAS/30)); // mismo comportamiento (aprox 6 meses)
+
+   
+
+    const userRef   = db.ref(`users/${user.uid}`);
+    const ticketRef = userRef.child(`tickets/${ticketId}`);
+    const pointsRef = userRef.child('points');
+    const indexRef  = db.ref(`ticketsIndex/${ymd}/${indexKey}`);
+
+    console.log("📦 DATA A GUARDAR:", {
+    folio,
+    fecha: fechaStr,
+    total: totalNum,
+    mesero,
+    monedero
+  });
+
 
     try{
-      // Índice anti-duplicado
-      const idxTx = await indexRef.transaction(curr=>{ if (curr) return; return { uid:user.uid, createdAt:Date.now() }; });
+      const idxTx = await indexRef.transaction(curr=>{
+        if (curr) return;
+        return { uid:user.uid, folio, fecha:fechaStr, total:totalNum, totalCents, createdAt:Date.now() };
+      });
       if (!idxTx.committed){
-        msgTicket.className='validacion-msg err'; msgTicket.textContent="❌ Este folio ya fue registrado para esa fecha."; return;
+        msgTicket.className='validacion-msg err';
+        msgTicket.textContent = "❌ Este ticket (mismo folio, fecha y monto) ya fue registrado.";
+        return;
       }
 
-      // Crea ticket
       const res = await ticketRef.transaction(current=>{
-        if (current) return;
-        return {
-          folio,
-          fecha: fechaStr,
-          total: totalNum,
-          productos: productos.map(p=>({ nombre:p.name, cantidad:p.qty, precioLinea:p.price ?? null, puntos_unitarios:p.pointsUnit })),
-          puntos: { total: puntosEnteros, detalle },
-          puntosTotal: puntosEnteros,
-          points: puntosEnteros,
-          vencePuntos: vencePuntos.getTime(),
-          createdAt: Date.now()
-        };
+      if (current) return;
+
+      const dataToSave = {
+        id: ticketId,
+        folio,
+        fecha: fechaStr,
+        total: totalNum,
+        mesero: mesero || "",
+
+        productos: {
+          "0": {
+            nombre: "Consumo",
+            cantidad: 1,
+            puntos_unitarios: Math.min(15, Math.max(1, Math.round(monedero)))
+          }
+        },
+
+        puntos: {
+          total: monedero,
+          detalle: {
+            "0": {
+              producto: "Consumo",
+              cantidad: 1,
+              puntos_unitarios: Math.min(15, Math.max(1, Math.round(monedero))),
+              puntos_subtotal: Math.min(15, Math.max(1, Math.round(monedero)))
+            }
+          }
+        },
+
+        puntosTotal: monedero,
+        points: monedero,
+
+        vencePuntos: vencePuntos.getTime(),
+        createdAt: Date.now()
+      };
+
+      console.log("🚀 INTENTANDO GUARDAR:", dataToSave);
+
+      return dataToSave;
+
       });
       if (!res.committed){
-        msgTicket.className='validacion-msg err'; msgTicket.textContent="❌ Este ticket ya está en tu cuenta."; return;
+        msgTicket.className='validacion-msg err';
+        msgTicket.textContent="❌ Ya tienes un registro con ese folio y fecha.";
+        return;
       }
 
-      // Suma al saldo
-      await pointsRef.transaction(curr => (Number(curr)||0) + puntosEnteros);
+      // ✅ Sumar monedero al saldo del usuario (con 2 decimales)
+      await pointsRef.transaction(curr => {
+        const next = round2(Number(curr||0) + monedero);
+        return next;
+      });
+
+      // ✅ LIVE EVENT: ticket registrado OK
+      try{
+        await pushLiveEvent({
+          type: "ticket_registered",
+          brand: "Applebees",
+          storeId: "APB_PASEO",
+          storeName: "Applebee’s Paseo Central",
+          status: "ok",
+          ticket: { folio, fecha: fechaStr, total: totalNum, mesero }
+        });
+      }catch{}
 
       msgTicket.className='validacion-msg ok';
-      msgTicket.textContent=`✅ Ticket registrado. Puntos: ${puntosEnteros}`;
-      setTimeout(()=>{ window.location.href='panel.html'; }, 1200);
-    }catch(e){
-      console.error(e);
+      msgTicket.textContent=`✅ Ticket registrado con éxito. Se abonó ${fmtMoney(monedero)} (5%) a tu monedero electrónico.`;
+      setTimeout(()=>{ window.location.href='panel.html'; }, 900);
+      }catch(e){
+      console.error("🔥 ERROR COMPLETO:", e.code, e.message, e);
+
       msgTicket.className='validacion-msg err';
-      if (String(e).includes('Permission denied')){
+
+      if (e.code === "PERMISSION_DENIED" || String(e).includes('Permission denied')){
         msgTicket.textContent="Permiso denegado por Realtime Database. Revisa las reglas.";
       }else{
         msgTicket.textContent="No se pudo registrar el ticket. Revisa tu conexión e inténtalo de nuevo.";
@@ -574,36 +680,46 @@
     }
   }
 
-  // ===== Sesión y eventos =====
   auth.onAuthStateChanged(user=>{
-    isLogged=!!user;
-    if (!user){
-      greetEl && (greetEl.textContent="Inicia sesión para registrar tickets");
-      btnRegistrar && (btnRegistrar.disabled=true);
-    } else {
-      greetEl && (greetEl.textContent=`Registro de ticket — ${user.email}`);
-      btnRegistrar && (btnRegistrar.disabled=false);
-    }
-  });
+    unsub.forEach(fn=>{ try{fn();}catch{} });
+    unsub = [];
 
-  // recibe productos desde ocr.js (y desde applyParsedFields)
-  document.addEventListener('ocr:productos', ev=>{
-    const det = ev.detail || [];
-    productos = [];
-    if (Array.isArray(det)) det.forEach(p => {
-      const priceNum = typeof p.price === 'number' ? p.price : null;
-      const qty = p.qty || 1;
-      upsertProducto(p.name, qty, priceNum);
-    });
+    if (!user){
+      window.location.href = 'index.html';
+      return;
+    }
+    if (greetEl) greetEl.textContent = `Registro de ticket — ${user.email}`;
+    attachUserStreams(user.uid);
   });
 
   btnRegistrar?.addEventListener('click', registrarTicketRTDB);
 
-  // init
-  disableAllEdits();
-  if (tablaPuntosBody) tablaPuntosBody.innerHTML='';
+  if (btnBack) {
+    btnBack.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
 
-  // ===== Logs de errores =====
+      const m = document.getElementById("cameraModal");
+      if (m) {
+        m.style.display = "none";
+        m.setAttribute("aria-hidden", "true");
+      }
+
+      try {
+        if (liveStream) {
+          liveStream.getTracks().forEach(t => t.stop());
+          liveStream = null;
+        }
+      } catch {}
+
+      window.location.assign("panel.html");
+    }, { capture: true });
+  }
+
+  // ✅ Siempre bloqueado (sin teclado)
+  lockInputs();
+  btnRegistrar && (btnRegistrar.disabled = true);
+
   window.addEventListener("error", (e) => {
     console.error("[window error]", e.error || e.message || e);
   });
