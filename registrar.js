@@ -226,13 +226,14 @@
 
       let ret = null;
 
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 3; i++) {
       ret = await window.processTicketWithIA(file);
 
-      if (ret?.folio && ret?.total > 0) break;
+      if (ret?.folio && ret?.total > 0 && ret?.fecha) break;
 
       console.warn("🔁 Reintentando OCR...");
     }
+
 
 
       const folio  = (ret?.folio||"").toString().trim();
@@ -348,12 +349,16 @@
     if (!w||!h){ setStatus("Cámara aún no lista. Intenta de nuevo.","err"); return; }
     const c=document.createElement('canvas'); c.width=w; c.height=h;
     const ctx = c.getContext('2d');
-    ctx.filter = "grayscale(1) contrast(1.4) brightness(1.1) sharpen(1)";
+    ctx.filter = "grayscale(1) contrast(1.8) brightness(1.2)";
+   // 🔥 aumentar nitidez manual
+    ctx.imageSmoothingEnabled = false;
+
     // Recorte central (ticket normalmente está al centro)
-    const cropX = w * 0.1;
-    const cropY = h * 0.2;
-    const cropW = w * 0.8;
-    const cropH = h * 0.6;
+    const cropX = w * 0.05;
+    const cropY = h * 0.15;
+    const cropW = w * 0.9;
+    const cropH = h * 0.7;
+
 
     ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, w, h);
 
