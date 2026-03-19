@@ -225,32 +225,17 @@
       btnRegistrar && (btnRegistrar.disabled = true);
 
       const ret = await window.processTicketWithIA(file);
-      console.log("🧾 OCR RESULT:", ret);
 
-      const folio  = (ret?.folio || ret?.numero || "").toString().trim();
-      const fecha  = (ret?.fecha || ret?.date || "").toString().trim();
-      const total  = Number(ret?.total || ret?.amount || 0);
+      const folio  = (ret?.folio||"").toString().trim();
+      const fecha  = (ret?.fecha||"").toString().trim();
+      const total  = Number(ret?.total||0);
       const mesero = sanitizeMesero(iMesero?.value);
 
       // ✅ Asignar valores
-      if (iNum) {
-        iNum.value = folio || "NO DETECTADO";
-      }
-
-      if (iFecha) {
-        iFecha.value = fecha || "NO DETECTADA";
-      }
-
-      if (iMesero) {
-        iMesero.value = mesero || "";
-      }
-
-      if (iTotal) {
-        iTotal.value = (Number.isFinite(total) && total > 0)
-          ? total.toFixed(2)
-          : "0.00";
-      }
-
+      if (iNum)   iNum.value = folio;
+      if (iFecha) iFecha.value = fecha;
+      if (iMesero) iMesero.value = mesero;
+      if (iTotal) iTotal.value = (Number.isFinite(total) ? total : 0).toFixed(2);
 
       // ✅ Validación FUERTE (si falta total real, NO permitir registrar)
       const okFolio = /^\d{5,7}$/.test(folio);
@@ -268,8 +253,6 @@
       // Mesero es opcional (si no se lee, no bloquea)
       const meseroTxt = mesero ? ` · Mesero: ${mesero}` : "";
       setStatus(`✓ Ticket leído. Folio: ${folio||"(sin)"} · Fecha: ${fecha||"(sin)"} · Total: $${total.toFixed(2)}${meseroTxt}`, "ok");
-      setStatus("DEBUG OCR: " + JSON.stringify(ret), "ok");
-
 
       // ✅ LIVE EVENT: scan OK
       try{
