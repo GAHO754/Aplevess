@@ -350,7 +350,9 @@ async function preprocessImage(file) {
   else { c.width = Math.round(w * scale); c.height = Math.round(h * scale); }
 
   const ctx = c.getContext("2d");
-  ctx.filter = "grayscale(1) contrast(1.35) brightness(1.05)";
+  ctx.filter = "grayscale(1) contrast(1.8) brightness(1.2)";
+  ctx.imageSmoothingEnabled = false;
+
   if (rotate) {
     ctx.translate(c.width / 2, c.height / 2);
     ctx.rotate(Math.PI / 2);
@@ -379,10 +381,10 @@ async function preprocessImage(file) {
 async function runTesseract(canvas) {
   const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.97));
   const { data } = await Tesseract.recognize(blob, "spa+eng", {
-    tessedit_pageseg_mode: "4",
+    tessedit_pageseg_mode: "6",
     preserve_interword_spaces: "1",
     user_defined_dpi: "360",
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$., ",
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$.,% ",
   });
   return data.text || "";
 }
@@ -479,28 +481,55 @@ window.processTicketWithIA = async function processTicketWithIA(file) {
   dbgNote("processTicketWithIA: inicio");
 
   // 1) Preprocesado
-  const canvas = await preprocessImage(file);
-  dbgNote(`preprocess: ok (${canvas.width}x${canvas.height})`);
+  // 1) Preprocesado
+const canvas = await preprocessImage(file);
+dbgNote(`preprocess: ok (${canvas.width}x${canvas.height})`);
+
+// 🔥 NUEVO: enfocarse en parte inferior (donde está el total)
+const focusedCanvas = cropBottom(canvas);
+dbgNote(`cropBottom aplicado`);
+
 
   // 2) OCR
-  const rawText = await runTesseract(canvas);
+  // OCR completo
+const rotatedFull = await autoRotateIfNeeded(canvas);
+const rawText = rotatedFull.text;
+
+// OCR solo parte inferior (mejor total)
+const rotatedBottom = await autoRotateIfNeeded(focusedCanvas);
+const bottomText = rotatedBottom.text;
+
+
   dbgNote(`tesseract chars: ${rawText.length}`);
 
   const lines = splitLines(rawText);
-  dbgNote(`lines: ${lines.length}`);
+  const bottomLines = String(bottomText || "")
+    .split("\n")
+    .map(s => s.trim())
+    .filter(Boolean);
 
-  // 3) Validación básica (si no parece ticket)
-  if (!isLikelyTicket(rawText, lines)) {
-    dbgNote("No parece ticket (isLikelyTicket=false)");
-    setIABadge('err', '(no ticket)');
-    dbgDump();
-    return { folio:"", fecha:"", total:0, mesero:"" };
-  }
+
+
+  // 3) Validación básica (modo tolerante)
+let ticketConfidence = true;
+
+if (!isLikelyTicket(rawText, lines)) {
+  ticketConfidence = false;
+  dbgNote("⚠️ Ticket dudoso (isLikelyTicket=false), continúo de todas formas...");
+  setIABadge('err', '(dudoso)');
+} else {
+  setIABadge('ok', '(ticket)');
+}
+
 
   // 4) Extracción por heurísticas
   let folio = extractFolio(lines);
   let fecha = extractDateISO(rawText);
-  let total = detectGrandTotal(lines);
+  let total = detectGrandTotal(bottomLines) || detectGrandTotal(lines);
+
+// 🔥 corregir errores típicos OCR (12300 → 123.00)
+total = fixWeirdTotals(total);
+
   let mesero = extractMesero(rawText, lines);
 
   dbgNote(`heurística -> folio=${folio} fecha=${fecha} total=${total} mesero=${mesero}`);
@@ -531,7 +560,29 @@ window.processTicketWithIA = async function processTicketWithIA(file) {
   // Normalizaciones finales
   if (!/^\d{5,7}$/.test(String(folio||""))) folio = String(folio||"").match(/\b\d{5,7}\b/)?.[0] || "";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha||""))) fecha = "";
-  if (!Number.isFinite(total)) total = 0;
+  if (!Number.isFinite(total) || total <= 0) {
+
+  dbgNote("⚠️ Intento rescate de total por fallback simple");
+
+  const fallbackNums = (rawText.match(/\d+[.,]\d{2}/g) || [])
+  .map(normalizeNum)
+  .filter(n => n && n > 10 && n < 10000); // límite razonable
+
+if (fallbackNums.length) {
+  const candidate = Math.max(...fallbackNums);
+
+  // evitar números absurdamente altos comparados con otros
+  if (candidate < 5000) {
+    total = candidate;
+    dbgNote(`🛟 Total rescatado (seguro): ${total}`);
+  } else {
+    dbgNote(`🚫 Fallback ignorado por valor sospechoso: ${candidate}`);
+  }
+}
+
+}
+
+
 
   if (mesero) {
     mesero = String(mesero)
@@ -545,10 +596,73 @@ window.processTicketWithIA = async function processTicketWithIA(file) {
 
   dbgDump();
 
-  return {
-    folio,
-    fecha,
-    total,
-    mesero
-  };
+return {
+  folio,
+  fecha,
+  total,
+  mesero,
+  ticketConfidence
 };
+
+};
+
+async function autoRotateIfNeeded(canvas) {
+  const angles = [0, 90, -90];
+  let bestText = "";
+  let bestScore = 0;
+  let bestCanvas = canvas;
+
+  for (let angle of angles) {
+    const c = document.createElement("canvas");
+    const ctx = c.getContext("2d");
+
+    if (angle === 0) {
+      c.width = canvas.width;
+      c.height = canvas.height;
+      ctx.drawImage(canvas, 0, 0);
+    } else {
+      c.width = canvas.height;
+      c.height = canvas.width;
+      ctx.translate(c.width / 2, c.height / 2);
+      ctx.rotate((angle * Math.PI) / 180);
+      ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+    }
+
+    const text = await runTesseract(c);
+    const score = (text.match(/\d+[.,]\d{2}/g) || []).length;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestText = text;
+      bestCanvas = c;
+    }
+  }
+
+  dbgNote(`AutoRotate score: ${bestScore}`);
+  return { canvas: bestCanvas, text: bestText };
+}
+
+
+function cropBottom(canvas) {
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d");
+
+  const h = canvas.height;
+  const w = canvas.width;
+
+  c.width = w;
+  c.height = h * 0.4; // solo 40% inferior
+
+  ctx.drawImage(canvas, 0, h * 0.6, w, h * 0.4, 0, 0, w, h * 0.4);
+  return c;
+}
+function fixWeirdTotals(n) {
+  if (!Number.isFinite(n)) return n;
+
+  // evitar 12300 en vez de 123.00
+  if (n > 1000 && n % 1 === 0) {
+    return n / 100;
+  }
+
+  return n;
+}
