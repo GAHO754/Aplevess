@@ -224,12 +224,28 @@
       lockInputs();
       btnRegistrar && (btnRegistrar.disabled = true);
 
-      const ret = await window.processTicketWithIA(file);
+      let ret = null;
+
+    for (let i = 0; i < 2; i++) {
+      ret = await window.processTicketWithIA(file);
+
+      if (ret?.folio && ret?.total > 0) break;
+
+      console.warn("🔁 Reintentando OCR...");
+    }
+
 
       const folio  = (ret?.folio||"").toString().trim();
       const fecha  = (ret?.fecha||"").toString().trim();
       const total  = Number(ret?.total||0);
       const mesero = sanitizeMesero(iMesero?.value);
+
+      // 🔥 MEJORA: feedback rápido si OCR falló
+     if (!folio || !total) {
+  setStatus("📸 No se detectó bien el ticket. Intenta con mejor luz y encuadre.", "err");
+}
+
+
 
       // ✅ Asignar valores
       if (iNum)   iNum.value = folio;
@@ -238,7 +254,7 @@
       if (iTotal) iTotal.value = (Number.isFinite(total) ? total : 0).toFixed(2);
 
       // ✅ Validación FUERTE (si falta total real, NO permitir registrar)
-      const okFolio = /^\d{5,7}$/.test(folio);
+      const okFolio = folio.length >= 4;
       const okFecha = /^\d{4}-\d{2}-\d{2}$/.test(fecha);
       const okTotal = Number.isFinite(total) && total > 0;
 
@@ -332,8 +348,15 @@
     if (!w||!h){ setStatus("Cámara aún no lista. Intenta de nuevo.","err"); return; }
     const c=document.createElement('canvas'); c.width=w; c.height=h;
     const ctx = c.getContext('2d');
-    ctx.filter = "contrast(1.15) brightness(1.05) saturate(1.05)";
-    ctx.drawImage(video,0,0,w,h);
+    ctx.filter = "grayscale(1) contrast(1.4) brightness(1.1) sharpen(1)";
+    // Recorte central (ticket normalmente está al centro)
+    const cropX = w * 0.1;
+    const cropY = h * 0.2;
+    const cropW = w * 0.8;
+    const cropH = h * 0.6;
+
+    ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, w, h);
+
     stopCamera();
     const dataURL=c.toDataURL("image/jpeg",.95);
     const blob=dataURLtoBlob(dataURL);
