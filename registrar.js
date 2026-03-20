@@ -224,21 +224,52 @@
       lockInputs();
       btnRegistrar && (btnRegistrar.disabled = true);
 
-      let ret = null;
+      // 🔥 SOLO 2 intentos (más rápido)
+let results = [];
 
-    for (let i = 0; i < 3; i++) {
-      ret = await window.processTicketWithIA(file);
+for (let i = 0; i < 2; i++) {
+  const r = await window.processTicketWithIA(file);
+  if (r) results.push(r);
+}
 
-      if (ret?.folio && ret?.total > 0 && ret?.fecha) break;
+// 🧠 elegir mejor resultado con VALIDACIÓN REAL
+const ret = pickBestResult(results);
 
-      console.warn("🔁 Reintentando OCR...");
-    }
+function isValidResult(r){
+  if (!r) return false;
 
+  const hasFolio = /^\d{4,7}$/.test(String(r.folio || ""));
+  const hasFecha = /^\d{4}-\d{2}-\d{2}$/.test(String(r.fecha || ""));
+  const hasTotal = Number(r.total) > 50; // evita subtotales pequeños
+
+  return hasTotal && (hasFolio || hasFecha);
+}
+
+function pickBestResult(results) {
+  if (!results.length) return null;
+
+  // 🔥 filtrar solo válidos
+  const valid = results.filter(isValidResult);
+
+  if (valid.length) {
+    // priorizar total más alto pero válido
+    valid.sort((a, b) => (b.ticketConfidence || 0) - (a.ticketConfidence || 0));
+    return valid[0];
+  }
+
+  // fallback
+  return results[0];
+}
 
 
       const folio  = (ret?.folio||"").toString().trim();
       const fecha  = (ret?.fecha||"").toString().trim();
       const total  = Number(ret?.total||0);
+      // 🔥 VALIDACIÓN EXTRA PARA EVITAR ERRORES DE OCR
+if (total < 100) {
+  console.warn("⚠️ Total sospechoso:", total);
+}
+
       const mesero = sanitizeMesero(iMesero?.value);
 
       // 🔥 MEJORA: feedback rápido si OCR falló
