@@ -2,14 +2,20 @@
 
 // 🔥 IMPORTS SIEMPRE ARRIBA
 import app from "./firebase-config.js";
-import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getAuth } from "firebase/auth";
-import { getDatabase } from "firebase/database";
 
-// 🔥 INICIALIZACIÓN
+import { getStorage, ref, uploadBytes, getDownloadURL } 
+from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+
+import { getAuth } 
+from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+import { getDatabase } 
+from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
 const storage = getStorage(app);
 const auth = getAuth(app);
 const db = getDatabase(app);
+
 
 // 🔥 TU APP
 (() => {
