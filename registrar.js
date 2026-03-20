@@ -205,6 +205,26 @@
     return s.replace(/[^A-ZÁÉÍÓÚÑ\s]/gi,"").replace(/\s+/g," ").trim().toUpperCase();
   }
 
+  async function uploadTicketImage(file, folio) {
+  try {
+    const user = firebase.auth().currentUser;
+    if (!user) throw new Error("Usuario no autenticado");
+
+    const storageRef = firebase.storage().ref();
+    const path = `ticketsImages/${user.uid}/${folio}_${Date.now()}.jpg`;
+
+    const snapshot = await storageRef.child(path).put(file);
+    const url = await snapshot.ref.getDownloadURL();
+
+    console.log("✅ Imagen subida:", url);
+    return url;
+
+  } catch (err) {
+    console.error("❌ Error subiendo imagen:", err);
+    return "";
+  }
+}
+
   async function autoProcessCurrentFile() {
     const file = fileInput?.files?.[0];
     if (!file) {
@@ -230,6 +250,8 @@
       const fecha  = (ret?.fecha||"").toString().trim();
       const total  = Number(ret?.total||0);
       const mesero = sanitizeMesero(iMesero?.value);
+      const isValid = ret?.isValid;   
+
 
       // ✅ Asignar valores
       if (iNum)   iNum.value = folio;
@@ -242,17 +264,24 @@
       const okFecha = /^\d{4}-\d{2}-\d{2}$/.test(fecha);
       const okTotal = Number.isFinite(total) && total > 0;
 
-      if (!okTotal) {
-        setStatus("❌ No pude detectar el TOTAL (línea 'Total 123.45'). Toma otra foto más clara del área de TOTAL.", "err");
-        msgTicket.className='validacion-msg err';
-        msgTicket.textContent="No se puede registrar sin TOTAL válido.";
-        lockInputs();
-        return;
-      }
+     if (!isValid) {
+      setStatus("❌ Ticket no válido. Asegúrate que se vea FOLIO, FECHA y TOTAL.", "err");
+
+      msgTicket.className='validacion-msg err';
+      msgTicket.textContent="La imagen no cumple validación.";
+
+      return;
+    }
+
 
       // Mesero es opcional (si no se lee, no bloquea)
       const meseroTxt = mesero ? ` · Mesero: ${mesero}` : "";
       setStatus(`✓ Ticket leído. Folio: ${folio||"(sin)"} · Fecha: ${fecha||"(sin)"} · Total: $${total.toFixed(2)}${meseroTxt}`, "ok");
+            // ✅ SUBIR IMAGEN A FIREBASE
+      const imageUrl = await uploadTicketImage(file, folio);
+
+      // puedes guardar temporalmente si quieres usarla después
+      window.lastTicketImage = imageUrl;
 
       // ✅ LIVE EVENT: scan OK
       try{
@@ -590,6 +619,8 @@
         fecha: fechaStr,
         total: totalNum,
         mesero: mesero || "",
+        imagen: window.lastTicketImage || "",
+
 
         productos: {
           "0": {
