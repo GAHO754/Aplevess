@@ -407,17 +407,39 @@ async function preprocessImage(file) {
   return c;
 }
 
-/* ====== Tesseract ====== */
 async function runTesseract(canvas) {
-  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.97));
-  const { data } = await Tesseract.recognize(blob, "spa+eng", {
-    tessedit_pageseg_mode: "6",
-    preserve_interword_spaces: "1",
-    user_defined_dpi: "360",
-    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$.,% ",
-  });
-  return data.text || "";
+  try {
+    // 🔥 Validar que Tesseract exista
+    if (typeof Tesseract === "undefined") {
+      throw new Error("Tesseract no está cargado");
+    }
+
+    // 🔥 Crear blob correctamente
+    const blob = await new Promise((res, rej) => {
+      canvas.toBlob((b) => {
+        if (!b) return rej(new Error("No se pudo generar imagen (blob)"));
+        res(b);
+      }, "image/jpeg", 0.97);
+    });
+
+    // 🔥 Ejecutar OCR con debug
+    const result = await Tesseract.recognize(blob, "spa+eng", {
+      logger: (m) => console.log("OCR:", m), // 👈 súper útil
+      tessedit_pageseg_mode: "6",
+      preserve_interword_spaces: "1",
+      user_defined_dpi: "360",
+      tessedit_char_whitelist:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$.,% ",
+    });
+
+    return result?.data?.text || "";
+
+  } catch (err) {
+    console.error("🔥 ERROR REAL OCR:", err);
+    throw err; // 👈 esto permite que tu UI muestre el error real
+  }
 }
+
 
 /* ====== IA (folio, fecha, total, mesero) ====== */
 async function callOpenAI(rawText) {
