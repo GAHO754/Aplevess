@@ -529,7 +529,7 @@
 
     const folio=(iNum?.value||'').trim().toUpperCase();
     const fechaStr=(iFecha?.value||'').trim();
-    const totalNum=parseFloat(iTotal?.value||"0")||0;
+    const totalNum = Number(window.lastOCRTotal || 0);
     const mesero=(iMesero?.value||'').trim().toUpperCase();
 
     // ✅ Bloqueo fuerte: NO registrar si no hay TOTAL válido real
