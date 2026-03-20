@@ -276,7 +276,7 @@
 
       // Mesero es opcional (si no se lee, no bloquea)
       const meseroTxt = mesero ? ` · Mesero: ${mesero}` : "";
-      setStatus(`✓ Ticket leído. Folio: ${folio||"(sin)"} · Fecha: ${fecha||"(sin)"} · Total: $${total.toFixed(2)}${meseroTxt}`, "ok");
+      setStatus(`✓ Ticket leído. Folio: ${folio||"(sin)"} · Fecha: ${fecha||"(sin)"}${meseroTxt}`, "ok");
             // ✅ SUBIR IMAGEN A FIREBASE
       const imageUrl = await uploadTicketImage(file, folio);
 
