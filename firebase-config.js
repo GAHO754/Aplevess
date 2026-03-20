@@ -1,12 +1,3 @@
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-
-import { initializeApp } from "firebase/app";
-
-const app = initializeApp(firebaseConfig);
-
-export default app;
-
 
 const firebaseConfig = {
   apiKey: "AIzaSyAWta7DENSCSb-DN8OcKGa6uAbTbUYJhVg",
