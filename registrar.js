@@ -1,12 +1,23 @@
 // registrar.js — RTDB + Cámara + OCR AUTO + Bloqueo total + Mesero + resumen claro (Saldo)
+
+// 🔥 IMPORTS SIEMPRE ARRIBA
+import app from "./firebase-config.js";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { getAuth } from "firebase/auth";
+import { getDatabase } from "firebase/database";
+
+// 🔥 INICIALIZACIÓN
+const storage = getStorage(app);
+const auth = getAuth(app);
+const db = getDatabase(app);
+
+// 🔥 TU APP
 (() => {
   console.log("[registrar.js] cargado");
 
   const $ = id => document.getElementById(id);
 
-  // ===== Firebase =====
-  const auth = firebase.auth();
-  const db   = firebase.database();
+  
 
   // ================= LIVE EVENTS (MÓDULO 1) =================
   async function pushLiveEvent(payload){
@@ -205,16 +216,18 @@
     return s.replace(/[^A-ZÁÉÍÓÚÑ\s]/gi,"").replace(/\s+/g," ").trim().toUpperCase();
   }
 
-  async function uploadTicketImage(file, folio) {
+
+
+async function uploadTicketImage(file, folio) {
   try {
-    const user = firebase.auth().currentUser;
+    const user = auth.currentUser;
     if (!user) throw new Error("Usuario no autenticado");
 
-    const storageRef = firebase.storage().ref();
     const path = `ticketsImages/${user.uid}/${folio}_${Date.now()}.jpg`;
+    const storageRef = ref(storage, path);
 
-    const snapshot = await storageRef.child(path).put(file);
-    const url = await snapshot.ref.getDownloadURL();
+    const snapshot = await uploadBytes(storageRef, file);
+    const url = await getDownloadURL(snapshot.ref);
 
     console.log("✅ Imagen subida:", url);
     return url;
@@ -224,6 +237,7 @@
     return "";
   }
 }
+
 
   async function autoProcessCurrentFile() {
     const file = fileInput?.files?.[0];
