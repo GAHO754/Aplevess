@@ -545,10 +545,21 @@ window.processTicketWithIA = async function processTicketWithIA(file) {
 
   dbgDump();
 
-  return {
-    folio,
-    fecha,
-    total,
-    mesero
-  };
+  // ✅ VALIDACIÓN FINAL DEL TICKET
+const isValidTicket =
+  /^\d{5,7}$/.test(folio) &&
+  /^\d{4}-\d{2}-\d{2}$/.test(fecha) &&
+  Number.isFinite(total) &&
+  total > 0;
+
+dbgNote(`VALIDACIÓN FINAL: ${isValidTicket ? "OK" : "ERROR"}`);
+
+return {
+  folio,
+  fecha,
+  total,
+  mesero,
+  isValid: isValidTicket
+};
+
 };
