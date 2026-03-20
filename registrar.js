@@ -224,60 +224,12 @@
       lockInputs();
       btnRegistrar && (btnRegistrar.disabled = true);
 
-      // 🔥 SOLO 2 intentos (más rápido)
-let results = [];
-
-for (let i = 0; i < 2; i++) {
-  const r = await window.processTicketWithIA(file);
-  if (r) results.push(r);
-}
-
-// 🧠 elegir mejor resultado con VALIDACIÓN REAL
-const ret = pickBestResult(results);
-
-function isValidResult(r){
-  if (!r) return false;
-
-  const hasFolio = /^\d{4,7}$/.test(String(r.folio || ""));
-  const hasFecha = /^\d{4}-\d{2}-\d{2}$/.test(String(r.fecha || ""));
-  const hasTotal = Number(r.total) > 50; // evita subtotales pequeños
-
-  return hasTotal && (hasFolio || hasFecha);
-}
-
-function pickBestResult(results) {
-  if (!results.length) return null;
-
-  // 🔥 filtrar solo válidos
-  const valid = results.filter(isValidResult);
-
-  if (valid.length) {
-    // priorizar total más alto pero válido
-    valid.sort((a, b) => (b.ticketConfidence || 0) - (a.ticketConfidence || 0));
-    return valid[0];
-  }
-
-  // fallback
-  return results[0];
-}
-
+      const ret = await window.processTicketWithIA(file);
 
       const folio  = (ret?.folio||"").toString().trim();
       const fecha  = (ret?.fecha||"").toString().trim();
       const total  = Number(ret?.total||0);
-      // 🔥 VALIDACIÓN EXTRA PARA EVITAR ERRORES DE OCR
-if (total < 100) {
-  console.warn("⚠️ Total sospechoso:", total);
-}
-
       const mesero = sanitizeMesero(iMesero?.value);
-
-      // 🔥 MEJORA: feedback rápido si OCR falló
-     if (!folio || !total) {
-  setStatus("📸 No se detectó bien el ticket. Intenta con mejor luz y encuadre.", "err");
-}
-
-
 
       // ✅ Asignar valores
       if (iNum)   iNum.value = folio;
@@ -286,7 +238,7 @@ if (total < 100) {
       if (iTotal) iTotal.value = (Number.isFinite(total) ? total : 0).toFixed(2);
 
       // ✅ Validación FUERTE (si falta total real, NO permitir registrar)
-      const okFolio = folio.length >= 4;
+      const okFolio = /^\d{5,7}$/.test(folio);
       const okFecha = /^\d{4}-\d{2}-\d{2}$/.test(fecha);
       const okTotal = Number.isFinite(total) && total > 0;
 
@@ -380,19 +332,8 @@ if (total < 100) {
     if (!w||!h){ setStatus("Cámara aún no lista. Intenta de nuevo.","err"); return; }
     const c=document.createElement('canvas'); c.width=w; c.height=h;
     const ctx = c.getContext('2d');
-    ctx.filter = "grayscale(1) contrast(1.8) brightness(1.2)";
-   // 🔥 aumentar nitidez manual
-    ctx.imageSmoothingEnabled = false;
-
-    // Recorte central (ticket normalmente está al centro)
-    const cropX = w * 0.05;
-    const cropY = h * 0.15;
-    const cropW = w * 0.9;
-    const cropH = h * 0.7;
-
-
-    ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, w, h);
-
+    ctx.filter = "contrast(1.15) brightness(1.05) saturate(1.05)";
+    ctx.drawImage(video,0,0,w,h);
     stopCamera();
     const dataURL=c.toDataURL("image/jpeg",.95);
     const blob=dataURLtoBlob(dataURL);
