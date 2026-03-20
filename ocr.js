@@ -409,36 +409,30 @@ async function preprocessImage(file) {
 
 async function runTesseract(canvas) {
   try {
-    // 🔥 Validar que Tesseract exista
     if (typeof Tesseract === "undefined") {
       throw new Error("Tesseract no está cargado");
     }
 
-    // 🔥 Crear blob correctamente
     const blob = await new Promise((res, rej) => {
       canvas.toBlob((b) => {
-        if (!b) return rej(new Error("No se pudo generar imagen (blob)"));
+        if (!b) return rej(new Error("Canvas vacío o fallo al generar imagen"));
         res(b);
       }, "image/jpeg", 0.97);
     });
 
-    // 🔥 Ejecutar OCR con debug
     const result = await Tesseract.recognize(blob, "spa+eng", {
-      logger: (m) => console.log("OCR:", m), // 👈 súper útil
+      logger: m => console.log("OCR:", m), // 👈 ver progreso
       tessedit_pageseg_mode: "6",
-      preserve_interword_spaces: "1",
-      user_defined_dpi: "360",
-      tessedit_char_whitelist:
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$.,% ",
     });
 
     return result?.data?.text || "";
 
   } catch (err) {
     console.error("🔥 ERROR REAL OCR:", err);
-    throw err; // 👈 esto permite que tu UI muestre el error real
+    throw err;
   }
 }
+
 
 
 /* ====== IA (folio, fecha, total, mesero) ====== */
@@ -542,7 +536,14 @@ const focusedCanvas = cropBottom(canvas);
 dbgNote(`cropBottom aplicado`);
 
   // 2) OCR
-const rawText = await runTesseract(canvas);
+let rawText = "";
+try {
+  rawText = await runTesseract(canvas);
+} catch (e) {
+  console.error("❌ FALLÓ OCR:", e);
+  setStatus("Error OCR real: " + e.message, "err");
+  throw e;
+}
 
 // 🔥 bottom SIN rotación (más rápido)
 const bottomText = await runTesseract(focusedCanvas);
