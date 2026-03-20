@@ -1,17 +1,5 @@
 // registrar.js — RTDB + Cámara + OCR AUTO + Bloqueo total + Mesero + resumen claro (Saldo)
 
-// 🔥 IMPORTS SIEMPRE ARRIBA
-import app from "./firebase-config.js";
-
-import { getStorage, ref, uploadBytes, getDownloadURL } 
-from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
-
-import { getAuth } 
-from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-
-import { getDatabase } 
-from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
-
 const storage = getStorage(app);
 const auth = getAuth(app);
 const db = getDatabase(app);
@@ -226,14 +214,14 @@ const db = getDatabase(app);
 
 async function uploadTicketImage(file, folio) {
   try {
-    const user = auth.currentUser;
+    const user = firebase.auth().currentUser;
     if (!user) throw new Error("Usuario no autenticado");
 
+    const storageRef = firebase.storage().ref();
     const path = `ticketsImages/${user.uid}/${folio}_${Date.now()}.jpg`;
-    const storageRef = ref(storage, path);
 
-    const snapshot = await uploadBytes(storageRef, file);
-    const url = await getDownloadURL(snapshot.ref);
+    const snapshot = await storageRef.child(path).put(file);
+    const url = await snapshot.ref.getDownloadURL();
 
     console.log("✅ Imagen subida:", url);
     return url;
@@ -243,6 +231,7 @@ async function uploadTicketImage(file, folio) {
     return "";
   }
 }
+
 
 
   async function autoProcessCurrentFile() {
