@@ -81,6 +81,36 @@ function extractFolio(lines) {
     return m ? m[m.length - 1] : null;
   };
 
+  // 🔥 NUEVA lógica: recolectar todos los posibles folios
+const posibles = [];
+
+for (let i = from; i <= to; i++) {
+  const line = lines[i];
+
+  // 🔥 Ignorar líneas sospechosas
+  if (/cp\s*\d{5}/i.test(line)) continue;
+  if (/cliente|mesa|personas|orden|pedido/i.test(line)) continue;
+
+
+  const m = line.match(/\b(\d{5})\b/g);
+  if (m) {
+  m.forEach(n => {
+    const num = parseInt(n);
+    if (num > 1000 && num < 999999) {
+      posibles.push(num);
+    }
+  });
+}
+  }
+
+// 🔥 Elegir el más confiable (el menor)
+if (posibles.length) {
+  const elegido = posibles.sort((a, b) => a - b)[0];
+  dbgNote(`Folio corregido (mínimo): ${elegido}`);
+  return String(elegido);
+}
+
+
   for (let i = from; i <= to; i++) {
     const c = pick5(lines[i]);
     if (c) { dbgNote(`Folio 5d detectado @${i}: ${c}`); return c; }
@@ -489,15 +519,12 @@ dbgNote(`preprocess: ok (${canvas.width}x${canvas.height})`);
 const focusedCanvas = cropBottom(canvas);
 dbgNote(`cropBottom aplicado`);
 
-
   // 2) OCR
-  // OCR completo
-const rotatedFull = await autoRotateIfNeeded(canvas);
-const rawText = rotatedFull.text;
+const rawText = await runTesseract(canvas);
 
-// OCR solo parte inferior (mejor total)
-const rotatedBottom = await autoRotateIfNeeded(focusedCanvas);
-const bottomText = rotatedBottom.text;
+// 🔥 bottom SIN rotación (más rápido)
+const bottomText = await runTesseract(focusedCanvas);
+
 
 
   dbgNote(`tesseract chars: ${rawText.length}`);
@@ -525,10 +552,18 @@ if (!isLikelyTicket(rawText, lines)) {
   // 4) Extracción por heurísticas
   let folio = extractFolio(lines);
   let fecha = extractDateISO(rawText);
-  let total = detectGrandTotal(bottomLines) || detectGrandTotal(lines);
+  let totalBottom = detectGrandTotal(bottomLines);
+  let totalFull   = detectGrandTotal(lines);
+
+// 🔥 PRIORIDAD: bottom SIEMPRE gana
+let total = totalBottom || totalFull;
 
 // 🔥 corregir errores típicos OCR (12300 → 123.00)
 total = fixWeirdTotals(total);
+
+// 🔥 CORRECCIÓN INTELIGENTE
+total = fixCommonOcrErrors(total, rawText);
+
 
   let mesero = extractMesero(rawText, lines);
 
@@ -560,7 +595,8 @@ total = fixWeirdTotals(total);
   // Normalizaciones finales
   if (!/^\d{5,7}$/.test(String(folio||""))) folio = String(folio||"").match(/\b\d{5,7}\b/)?.[0] || "";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha||""))) fecha = "";
-  if (!Number.isFinite(total) || total <= 0) {
+  if (!Number.isFinite(total) || total < 50) {
+
 
   dbgNote("⚠️ Intento rescate de total por fallback simple");
 
@@ -642,7 +678,6 @@ async function autoRotateIfNeeded(canvas) {
   return { canvas: bestCanvas, text: bestText };
 }
 
-
 function cropBottom(canvas) {
   const c = document.createElement("canvas");
   const ctx = c.getContext("2d");
@@ -650,12 +685,18 @@ function cropBottom(canvas) {
   const h = canvas.height;
   const w = canvas.width;
 
-  c.width = w;
-  c.height = h * 0.4; // solo 40% inferior
+  // 🔥 SOLO zona donde casi siempre está el TOTAL
+  const startY = h * 0.55;
+  const height = h * 0.35;
 
-  ctx.drawImage(canvas, 0, h * 0.6, w, h * 0.4, 0, 0, w, h * 0.4);
+  c.width = w;
+  c.height = height;
+
+  ctx.drawImage(canvas, 0, startY, w, height, 0, 0, w, height);
+
   return c;
 }
+
 function fixWeirdTotals(n) {
   if (!Number.isFinite(n)) return n;
 
@@ -666,3 +707,23 @@ function fixWeirdTotals(n) {
 
   return n;
 }
+
+function fixCommonOcrErrors(total, text) {
+  if (!Number.isFinite(total)) return total;
+
+  const nums = (text.match(/\d+[.,]\d{2}/g) || [])
+    .map(normalizeNum)
+    .filter(n => n && n > 50 && n < 5000);
+
+  if (!nums.length) return total;
+
+  const max = Math.max(...nums);
+
+  // 🔥 Si hay un número más grande cercano → usarlo
+  if (max > total && (max - total) > 20)
+    dbgNote(`🔧 Corrección OCR: ${total} → ${max}`);
+    return max;
+  }
+
+  return total;
+
