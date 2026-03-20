@@ -81,36 +81,6 @@ function extractFolio(lines) {
     return m ? m[m.length - 1] : null;
   };
 
-  // 🔥 NUEVA lógica: recolectar todos los posibles folios
-const posibles = [];
-
-for (let i = from; i <= to; i++) {
-  const line = lines[i];
-
-  // 🔥 Ignorar líneas sospechosas
-  if (/cp\s*\d{5}/i.test(line)) continue;
-  if (/cliente|mesa|personas|orden|pedido/i.test(line)) continue;
-
-
-  const m = line.match(/\b(\d{5})\b/g);
-  if (m) {
-  m.forEach(n => {
-    const num = parseInt(n);
-    if (num > 1000 && num < 999999) {
-      posibles.push(num);
-    }
-  });
-}
-  }
-
-// 🔥 Elegir el más confiable (el menor)
-if (posibles.length) {
-  const elegido = posibles.sort((a, b) => a - b)[0];
-  dbgNote(`Folio corregido (mínimo): ${elegido}`);
-  return String(elegido);
-}
-
-
   for (let i = from; i <= to; i++) {
     const c = pick5(lines[i]);
     if (c) { dbgNote(`Folio 5d detectado @${i}: ${c}`); return c; }
@@ -380,9 +350,7 @@ async function preprocessImage(file) {
   else { c.width = Math.round(w * scale); c.height = Math.round(h * scale); }
 
   const ctx = c.getContext("2d");
-  ctx.filter = "grayscale(1) contrast(1.8) brightness(1.2)";
-  ctx.imageSmoothingEnabled = false;
-
+  ctx.filter = "grayscale(1) contrast(1.35) brightness(1.05)";
   if (rotate) {
     ctx.translate(c.width / 2, c.height / 2);
     ctx.rotate(Math.PI / 2);
@@ -407,33 +375,17 @@ async function preprocessImage(file) {
   return c;
 }
 
+/* ====== Tesseract ====== */
 async function runTesseract(canvas) {
-  try {
-    if (typeof Tesseract === "undefined") {
-      throw new Error("Tesseract no está cargado");
-    }
-
-    const blob = await new Promise((res, rej) => {
-      canvas.toBlob((b) => {
-        if (!b) return rej(new Error("Canvas vacío o fallo al generar imagen"));
-        res(b);
-      }, "image/jpeg", 0.97);
-    });
-
-    const result = await Tesseract.recognize(blob, "spa+eng", {
-      logger: m => console.log("OCR:", m), // 👈 ver progreso
-      tessedit_pageseg_mode: "6",
-    });
-
-    return result?.data?.text || "";
-
-  } catch (err) {
-    console.error("🔥 ERROR REAL OCR:", err);
-    throw err;
-  }
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.97));
+  const { data } = await Tesseract.recognize(blob, "spa+eng", {
+    tessedit_pageseg_mode: "4",
+    preserve_interword_spaces: "1",
+    user_defined_dpi: "360",
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:#/$., ",
+  });
+  return data.text || "";
 }
-
-
 
 /* ====== IA (folio, fecha, total, mesero) ====== */
 async function callOpenAI(rawText) {
@@ -527,67 +479,28 @@ window.processTicketWithIA = async function processTicketWithIA(file) {
   dbgNote("processTicketWithIA: inicio");
 
   // 1) Preprocesado
-  // 1) Preprocesado
-const canvas = await preprocessImage(file);
-dbgNote(`preprocess: ok (${canvas.width}x${canvas.height})`);
-
-// 🔥 NUEVO: enfocarse en parte inferior (donde está el total)
-const focusedCanvas = cropBottom(canvas);
-dbgNote(`cropBottom aplicado`);
+  const canvas = await preprocessImage(file);
+  dbgNote(`preprocess: ok (${canvas.width}x${canvas.height})`);
 
   // 2) OCR
-let rawText = "";
-try {
-  rawText = await runTesseract(canvas);
-} catch (e) {
-  console.error("❌ FALLÓ OCR:", e);
-  setStatus("Error OCR real: " + e.message, "err");
-  throw e;
-}
-
-// 🔥 bottom SIN rotación (más rápido)
-const bottomText = await runTesseract(focusedCanvas);
-
-
-
+  const rawText = await runTesseract(canvas);
   dbgNote(`tesseract chars: ${rawText.length}`);
 
   const lines = splitLines(rawText);
-  const bottomLines = String(bottomText || "")
-    .split("\n")
-    .map(s => s.trim())
-    .filter(Boolean);
+  dbgNote(`lines: ${lines.length}`);
 
-
-
-  // 3) Validación básica (modo tolerante)
-let ticketConfidence = true;
-
-if (!isLikelyTicket(rawText, lines)) {
-  ticketConfidence = false;
-  dbgNote("⚠️ Ticket dudoso (isLikelyTicket=false), continúo de todas formas...");
-  setIABadge('err', '(dudoso)');
-} else {
-  setIABadge('ok', '(ticket)');
-}
-
+  // 3) Validación básica (si no parece ticket)
+  if (!isLikelyTicket(rawText, lines)) {
+    dbgNote("No parece ticket (isLikelyTicket=false)");
+    setIABadge('err', '(no ticket)');
+    dbgDump();
+    return { folio:"", fecha:"", total:0, mesero:"" };
+  }
 
   // 4) Extracción por heurísticas
   let folio = extractFolio(lines);
   let fecha = extractDateISO(rawText);
-  let totalBottom = detectGrandTotal(bottomLines);
-  let totalFull   = detectGrandTotal(lines);
-
-// 🔥 PRIORIDAD: bottom SIEMPRE gana
-let total = totalBottom || totalFull;
-
-// 🔥 corregir errores típicos OCR (12300 → 123.00)
-total = fixWeirdTotals(total);
-
-// 🔥 CORRECCIÓN INTELIGENTE
-total = fixCommonOcrErrors(total, rawText);
-
-
+  let total = detectGrandTotal(lines);
   let mesero = extractMesero(rawText, lines);
 
   dbgNote(`heurística -> folio=${folio} fecha=${fecha} total=${total} mesero=${mesero}`);
@@ -618,30 +531,7 @@ total = fixCommonOcrErrors(total, rawText);
   // Normalizaciones finales
   if (!/^\d{5,7}$/.test(String(folio||""))) folio = String(folio||"").match(/\b\d{5,7}\b/)?.[0] || "";
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha||""))) fecha = "";
-  if (!Number.isFinite(total) || total < 50) {
-
-
-  dbgNote("⚠️ Intento rescate de total por fallback simple");
-
-  const fallbackNums = (rawText.match(/\d+[.,]\d{2}/g) || [])
-  .map(normalizeNum)
-  .filter(n => n && n > 10 && n < 10000); // límite razonable
-
-if (fallbackNums.length) {
-  const candidate = Math.max(...fallbackNums);
-
-  // evitar números absurdamente altos comparados con otros
-  if (candidate < 5000) {
-    total = candidate;
-    dbgNote(`🛟 Total rescatado (seguro): ${total}`);
-  } else {
-    dbgNote(`🚫 Fallback ignorado por valor sospechoso: ${candidate}`);
-  }
-}
-
-}
-
-
+  if (!Number.isFinite(total)) total = 0;
 
   if (mesero) {
     mesero = String(mesero)
@@ -655,98 +545,10 @@ if (fallbackNums.length) {
 
   dbgDump();
 
-return {
-  folio,
-  fecha,
-  total,
-  mesero,
-  ticketConfidence
+  return {
+    folio,
+    fecha,
+    total,
+    mesero
+  };
 };
-
-};
-
-async function autoRotateIfNeeded(canvas) {
-  const angles = [0, 90, -90];
-  let bestText = "";
-  let bestScore = 0;
-  let bestCanvas = canvas;
-
-  for (let angle of angles) {
-    const c = document.createElement("canvas");
-    const ctx = c.getContext("2d");
-
-    if (angle === 0) {
-      c.width = canvas.width;
-      c.height = canvas.height;
-      ctx.drawImage(canvas, 0, 0);
-    } else {
-      c.width = canvas.height;
-      c.height = canvas.width;
-      ctx.translate(c.width / 2, c.height / 2);
-      ctx.rotate((angle * Math.PI) / 180);
-      ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-    }
-
-    const text = await runTesseract(c);
-    const score = (text.match(/\d+[.,]\d{2}/g) || []).length;
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestText = text;
-      bestCanvas = c;
-    }
-  }
-
-  dbgNote(`AutoRotate score: ${bestScore}`);
-  return { canvas: bestCanvas, text: bestText };
-}
-
-function cropBottom(canvas) {
-  const c = document.createElement("canvas");
-  const ctx = c.getContext("2d");
-
-  const h = canvas.height;
-  const w = canvas.width;
-
-  // 🔥 SOLO zona donde casi siempre está el TOTAL
-  const startY = h * 0.55;
-  const height = h * 0.35;
-
-  c.width = w;
-  c.height = height;
-
-  ctx.drawImage(canvas, 0, startY, w, height, 0, 0, w, height);
-
-  return c;
-}
-
-function fixWeirdTotals(n) {
-  if (!Number.isFinite(n)) return n;
-
-  // evitar 12300 en vez de 123.00
-  if (n > 1000 && n % 1 === 0) {
-    return n / 100;
-  }
-
-  return n;
-}
-
-function fixCommonOcrErrors(total, text) {
-  if (!Number.isFinite(total)) return total;
-
-  const nums = (text.match(/\d+[.,]\d{2}/g) || [])
-    .map(normalizeNum)
-    .filter(n => n && n > 50 && n < 5000);
-
-  if (!nums.length) return total;
-
-  const max = Math.max(...nums);
-
-  // 🔥 Si hay un número más grande cercano → usarlo
-  if (max > total && (max - total) > 20)
-    dbgNote(`🔧 Corrección OCR: ${total} → ${max}`);
-    return max;
-  }
-
-  return total;
-
