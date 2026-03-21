@@ -218,7 +218,9 @@ async function uploadTicketImage(file, folio) {
     if (!user) throw new Error("Usuario no autenticado");
 
     const storageRef = firebase.storage().ref();
-    const path = `ticketsImages/${user.uid}/${folio}_${Date.now()}.jpg`;
+    const safeFolio = folio || "no_folio";
+    const path = `ticketsImages/${user.uid}/${safeFolio}_${Date.now()}.jpg`;
+
 
     const snapshot = await storageRef.child(path).put(file);
     const url = await snapshot.ref.getDownloadURL();
@@ -236,10 +238,14 @@ async function uploadTicketImage(file, folio) {
 
   async function autoProcessCurrentFile() {
     const file = fileInput?.files?.[0];
-    if (!file) {
-      setStatus("Sube o toma la foto del ticket primero.", "err");
-      return;
-    }
+
+// ✅ VALIDACIÓN NUEVA (AQUÍ VA)
+if (!file || !(file instanceof Blob)) {
+  console.error("❌ Archivo inválido:", file);
+  setStatus("Error con la imagen. Intenta otra vez.", "err");
+  return;
+}
+
 
     const ready = await waitForOCR();
     if (!ready) {
@@ -253,7 +259,10 @@ async function uploadTicketImage(file, folio) {
       lockInputs();
       btnRegistrar && (btnRegistrar.disabled = true);
 
-      const ret = await window.processTicketWithIA(file);
+      const ret = await window.processTicketWithIA(
+      URL.createObjectURL(file)
+    );
+
 
       const folio  = (ret?.folio||"").toString().trim();
       const fecha  = (ret?.fecha||"").toString().trim();
@@ -267,6 +276,8 @@ async function uploadTicketImage(file, folio) {
       if (iFecha) iFecha.value = fecha;
       if (iMesero) iMesero.value = mesero;
       if (iTotal) iTotal.value = (Number.isFinite(total) ? total : 0).toFixed(2);
+      window.lastOCRTotal = total;
+
 
       // ✅ Validación FUERTE (si falta total real, NO permitir registrar)
       const okFolio = /^\d{5,7}$/.test(folio);
