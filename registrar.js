@@ -259,9 +259,7 @@ if (!file || !(file instanceof Blob)) {
       lockInputs();
       btnRegistrar && (btnRegistrar.disabled = true);
 
-      const ret = await window.processTicketWithIA(
-      URL.createObjectURL(file)
-    );
+      const ret = await window.processTicketWithIA(file);
 
 
       const folio  = (ret?.folio||"").toString().trim();
