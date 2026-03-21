@@ -1,15 +1,17 @@
 // registrar.js — RTDB + Cámara + OCR AUTO + Bloqueo total + Mesero + resumen claro (Saldo)
 
-// 🔥 TU APP
 (() => {
   console.log("[registrar.js] cargado");
 
   const $ = id => document.getElementById(id);
 
   const storage = firebase.storage();
+  const auth = firebase.auth();
+  const db = firebase.database();
 
-  const auth = getAuth(app);
-  const db = getDatabase(app);
+  // resto de tu código...
+
+
 
   // ================= LIVE EVENTS (MÓDULO 1) =================
   async function pushLiveEvent(payload){
